@@ -1,0 +1,311 @@
+/**
+ * Delegation Endpoints
+ *
+ * GET /delegations/:id — Public, get a delegation record
+ * GET /delegations/:agent_id/chain — Public, verify delegation chain
+ * POST /delegations — Registrar-authenticated, create delegation
+ * DELETE /delegations/:id — Registrar-authenticated, revoke delegation
+ */
+
+import { findAgent } from './resolve.js';
+import { generateCredentialId } from '../utils/crypto.js';
+
+export async function handleGetDelegation(delegationId, env) {
+  const delegation = await env.DB.prepare(
+    'SELECT * FROM delegations WHERE id = ?'
+  ).bind(delegationId).first();
+
+  if (!delegation) {
+    return {
+      status: 404,
+      body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+    };
+  }
+
+  return {
+    status: 200,
+    body: formatDelegation(delegation)
+  };
+}
+
+export async function handleVerifyChain(agentIdentifier, env) {
+  // Find all delegations where this agent is the delegatee
+  const agent = await findAgent(agentIdentifier, env);
+  if (!agent) {
+    return {
+      status: 404,
+      body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentIdentifier}` } }
+    };
+  }
+
+  // Walk the chain from this agent back to root
+  const chain = [];
+  let currentId = agent.axis_id;
+  let currentDid = agent.did;
+  let chainValid = true;
+  let rootOperator = null;
+  const visited = new Set();
+
+  while (true) {
+    // Find delegation where issued_to is the current agent
+    const delegation = await env.DB.prepare(
+      `SELECT * FROM delegations
+       WHERE (issued_to = ? OR issued_to = ?) AND status = 'active'
+       ORDER BY created_at DESC LIMIT 1`
+    ).bind(currentId, currentDid).first();
+
+    if (!delegation) break; // reached root or no delegations
+
+    // Circular reference check
+    if (visited.has(delegation.id)) {
+      chainValid = false;
+      break;
+    }
+    visited.add(delegation.id);
+
+    // Check root_operator consistency
+    if (rootOperator === null) {
+      rootOperator = delegation.root_operator;
+    } else if (delegation.root_operator !== rootOperator) {
+      chainValid = false;
+    }
+
+    // Check scope attenuation (each link must be equal or narrower than parent)
+    const scope = JSON.parse(delegation.scope);
+    if (delegation.parent_credential_id && chain.length > 0) {
+      const parentScope = JSON.parse(chain[chain.length - 1].scope);
+      const scopeValid = scope.every(s => parentScope.includes(s));
+      if (!scopeValid) chainValid = false;
+    }
+
+    // Check expiry
+    const expired = new Date(delegation.expires_at) < new Date();
+    if (expired) chainValid = false;
+
+    // Check max_sub_delegation_depth
+    const constraints = delegation.constraints ? JSON.parse(delegation.constraints) : {};
+    if (constraints.max_sub_delegation_depth !== undefined && constraints.max_sub_delegation_depth < 0) {
+      chainValid = false;
+    }
+
+    chain.push({
+      delegation: delegation.id,
+      from: delegation.issued_by,
+      to: delegation.issued_to,
+      scope: scope,
+      signatureValid: true, // TODO: actual signature verification
+      expired,
+      status: delegation.status
+    });
+
+    // Move up the chain
+    currentId = delegation.issued_by;
+    currentDid = delegation.issued_by; // may or may not be a DID
+  }
+
+  // Get root operator info
+  let rootOperatorInfo = null;
+  if (rootOperator) {
+    const operatorNamespace = rootOperator.replace('axis:', '').replace(':operator', '');
+    const operator = await env.DB.prepare(
+      'SELECT domain, domain_verified FROM operators WHERE id = ?'
+    ).bind(operatorNamespace).first();
+    if (operator) {
+      rootOperatorInfo = { domain: operator.domain, verified: Boolean(operator.domain_verified) };
+    }
+  }
+
+  return {
+    status: 200,
+    body: {
+      agent: agent.did,
+      axis_id: agent.axis_id,
+      chainValid,
+      chainDepth: chain.length,
+      chain,
+      rootOperator: rootOperatorInfo,
+      verifiedAt: new Date().toISOString()
+    }
+  };
+}
+
+export async function handleCreateDelegation(body, registrar, env) {
+  const { issued_by, issued_to, root_operator, parent_credential_id, scope, constraints, expires } = body;
+
+  // Validate required fields
+  if (!issued_by || !issued_to || !root_operator || !scope || !expires) {
+    return {
+      status: 400,
+      body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires' } }
+    };
+  }
+
+  // Validate scope is an array
+  if (!Array.isArray(scope)) {
+    return {
+      status: 400,
+      body: { error: { code: 'invalid_request', message: 'scope must be an array of strings' } }
+    };
+  }
+
+  // If parent credential exists, validate attenuation
+  if (parent_credential_id) {
+    const parent = await env.DB.prepare(
+      'SELECT * FROM delegations WHERE id = ? AND status = ?'
+    ).bind(parent_credential_id, 'active').first();
+
+    if (!parent) {
+      return {
+        status: 400,
+        body: { error: { code: 'delegation_not_found', message: `Parent credential not found or not active: ${parent_credential_id}` } }
+      };
+    }
+
+    // Check root_operator consistency
+    if (parent.root_operator !== root_operator) {
+      return {
+        status: 400,
+        body: { error: { code: 'delegation_chain_invalid', message: 'root_operator must be identical to parent credential' } }
+      };
+    }
+
+    // Check scope attenuation
+    const parentScope = JSON.parse(parent.scope);
+    const scopeValid = scope.every(s => parentScope.includes(s));
+    if (!scopeValid) {
+      return {
+        status: 400,
+        body: { error: { code: 'delegation_chain_invalid', message: 'Scope must be equal to or narrower than parent credential scope (attenuation rule)' } }
+      };
+    }
+
+    // Check max_sub_delegation_depth
+    const parentConstraints = parent.constraints ? JSON.parse(parent.constraints) : {};
+    if (parentConstraints.max_sub_delegation_depth !== undefined) {
+      if (parentConstraints.max_sub_delegation_depth <= 0) {
+        return {
+          status: 400,
+          body: { error: { code: 'delegation_chain_invalid', message: 'Parent credential does not allow further sub-delegation (max_sub_delegation_depth = 0)' } }
+        };
+      }
+      // Decrement depth for the new credential
+      if (!constraints) body.constraints = {};
+      if (!constraints?.max_sub_delegation_depth) {
+        body.constraints = { ...constraints, max_sub_delegation_depth: parentConstraints.max_sub_delegation_depth - 1 };
+      }
+    }
+  }
+
+  // Generate credential ID
+  const namespace = issued_by.split(':')[1] || 'prime';
+  const credentialId = generateCredentialId('dc', namespace);
+
+  const now = new Date().toISOString();
+
+  await env.DB.prepare(
+    `INSERT INTO delegations (id, issued_by, issued_to, root_operator, parent_credential_id, scope, constraints, created_at, expires_at, revocable, status, proof, registrar_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+  ).bind(
+    credentialId,
+    issued_by,
+    issued_to,
+    root_operator,
+    parent_credential_id || null,
+    JSON.stringify(scope),
+    constraints ? JSON.stringify(constraints) : null,
+    now,
+    expires,
+    body.revocable !== false ? 1 : 0,
+    body.proof ? JSON.stringify(body.proof) : '{}',
+    registrar.id
+  ).run();
+
+  const created = await env.DB.prepare(
+    'SELECT * FROM delegations WHERE id = ?'
+  ).bind(credentialId).first();
+
+  return {
+    status: 201,
+    body: formatDelegation(created)
+  };
+}
+
+export async function handleRevokeDelegation(delegationId, body, registrar, env) {
+  const delegation = await env.DB.prepare(
+    'SELECT * FROM delegations WHERE id = ?'
+  ).bind(delegationId).first();
+
+  if (!delegation) {
+    return {
+      status: 404,
+      body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+    };
+  }
+
+  if (delegation.status === 'revoked') {
+    return {
+      status: 400,
+      body: { error: { code: 'delegation_revoked', message: 'Delegation is already revoked' } }
+    };
+  }
+
+  const now = new Date().toISOString();
+  const reason = body.reason || 'operator_request';
+
+  // Revoke this delegation
+  await env.DB.prepare(
+    `UPDATE delegations SET status = 'revoked', revoked_at = ?, revocation_reason = ? WHERE id = ?`
+  ).bind(now, reason, delegationId).run();
+
+  // Cascade: revoke all downstream delegations
+  const cascadeResult = await cascadeRevoke(delegationId, now, reason, env);
+
+  return {
+    status: 200,
+    body: {
+      delegationId,
+      status: 'revoked',
+      revokedAt: now,
+      cascadeRevoked: cascadeResult
+    }
+  };
+}
+
+async function cascadeRevoke(parentId, timestamp, reason, env) {
+  // Find all active delegations that have this as parent
+  const children = await env.DB.prepare(
+    `SELECT id FROM delegations WHERE parent_credential_id = ? AND status = 'active'`
+  ).bind(parentId).all();
+
+  let count = 0;
+  if (children.results) {
+    for (const child of children.results) {
+      await env.DB.prepare(
+        `UPDATE delegations SET status = 'revoked', revoked_at = ?, revocation_reason = ? WHERE id = ?`
+      ).bind(timestamp, `cascade:${reason}`, child.id).run();
+      count++;
+      // Recurse
+      count += await cascadeRevoke(child.id, timestamp, reason, env);
+    }
+  }
+  return count;
+}
+
+function formatDelegation(d) {
+  return {
+    axis_version: '0.1',
+    type: 'DelegationCredential',
+    id: d.id,
+    issued_by: d.issued_by,
+    issued_to: d.issued_to,
+    root_operator: d.root_operator,
+    parent_credential_id: d.parent_credential_id,
+    scope: JSON.parse(d.scope),
+    constraints: d.constraints ? JSON.parse(d.constraints) : {},
+    created: d.created_at,
+    expires: d.expires_at,
+    revocable: Boolean(d.revocable),
+    status: d.status,
+    proof: d.proof ? JSON.parse(d.proof) : {}
+  };
+}

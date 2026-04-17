@@ -1,0 +1,8 @@
+name = "axis-registry"
+main = "src/index.js"
+compatibility_date = "2026-04-11"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "axis-registry-db"
+database_id = "8ea43ac1-fa12-440b-afe4-f61250adfb59"
