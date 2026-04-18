@@ -2,7 +2,28 @@ name = "axis-registry"
 main = "src/index.js"
 compatibility_date = "2026-04-11"
 
+# Deploys into the Kipple Labs Cloudflare account (josh.ashcroft@gmail.com),
+# which also owns the axisprime.ai zone — required for custom-domain binding.
+account_id = "d8d4d675297dbb50b15d3ae8eadcaa54"
+
+# Custom domain — permanent registry URL embedded in all new agent records.
+# Cloudflare automatically manages DNS + SSL for custom_domain routes when the
+# zone (axisprime.ai) is in the same account as the worker.
+routes = [
+  { pattern = "registry.axisprime.ai", custom_domain = true, zone_name = "axisprime.ai" }
+]
+
+# Disabled — this account has no workers.dev subdomain, and we don't need one.
+# The custom domain (registry.axisprime.ai) is the canonical hostname. The old
+# axis-registry.editor-9a4.workers.dev URL lives in a separate account and
+# continues serving from there during the transition.
+workers_dev = false
+preview_urls = false
+
+[vars]
+REGISTRY_BASE_URL = "https://registry.axisprime.ai"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "axis-registry-db"
-database_id = "8ea43ac1-fa12-440b-afe4-f61250adfb59"
+database_id = "24b9fbef-8d62-457e-a130-b4894a35df84"

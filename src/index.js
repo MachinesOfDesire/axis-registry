@@ -38,9 +38,12 @@ export default {
       // Platforms publish their AXIS access requirements at this well-known endpoint.
       // This is the registry's own policy (as an example of the spec).
       if (method === 'GET' && path === '/.well-known/axis-access') {
+        const registryBase = env.REGISTRY_BASE_URL || 'https://axis-registry.editor-9a4.workers.dev';
+        // Derive platform_id (hostname) from the registry base URL.
+        const platformId = registryBase.replace(/^https?:\/\//, '').replace(/\/$/, '');
         return addCors(jsonResponse(200, {
           axis_version: '0.1',
-          platform_id: 'axis-registry.editor-9a4.workers.dev',
+          platform_id: platformId,
           access_policy: {
             minimum_verification_level: 'email',
             required_scopes: [],
@@ -74,7 +77,7 @@ export default {
           return addCors(jsonResponse(404, { error: { code: 'not_found', message: 'Operator not found' } }));
         }
 
-        const registryBase = 'https://axis-registry.editor-9a4.workers.dev';
+        const registryBase = env.REGISTRY_BASE_URL || 'https://axis-registry.editor-9a4.workers.dev';
 
         // Public layer — always returned
         const response = {

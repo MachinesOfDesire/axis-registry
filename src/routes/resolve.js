@@ -81,7 +81,7 @@ export async function handleGetAgent(agentId, env, request) {
     ? await env.DB.prepare('SELECT verification_tier, domain FROM operators WHERE id = ?').bind(agent.operator_id).first()
     : null;
 
-  return { status: 200, body: buildAgentRecord(agent, operator, !!presentationContext) };
+  return { status: 200, body: buildAgentRecord(agent, operator, !!presentationContext, env) };
 }
 
 export async function handleResolve(did, env) {
@@ -130,8 +130,8 @@ export async function findAgent(identifier, env) {
   return agent;
 }
 
-function buildAgentRecord(agent, operator, includePresentation) {
-  const registryBase = 'https://axis-registry.editor-9a4.workers.dev';
+function buildAgentRecord(agent, operator, includePresentation, env) {
+  const registryBase = (env && env.REGISTRY_BASE_URL) || 'https://axis-registry.editor-9a4.workers.dev';
 
   // Public layer — always returned, no authentication required.
   // Contains only what is necessary for cryptographic verification.
