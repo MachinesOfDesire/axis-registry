@@ -48,7 +48,7 @@ export default {
             minimum_verification_level: 'email',
             required_scopes: [],
             allow_unverified: true,
-            registration_url: 'https://kipple-registrar.editor-9a4.workers.dev/signup'
+            registration_url: 'https://signup.axisprime.ai/signup'
           },
           updated_at: '2026-04-13T00:00:00Z'
         }));
