@@ -130,14 +130,72 @@ export async function handleVerifyChain(agentIdentifier, env) {
 }
 
 export async function handleCreateDelegation(body, registrar, env) {
-  const { issued_by, issued_to, root_operator, parent_credential_id, scope, constraints, expires } = body;
+  // Per AXIS Protocol Spec v0.1, the canonical field name is `expires_at`
+  // (the spec defines Delegation Credential with `expires_at` and `issued_at`
+  // top-level fields). The historical `expires` shorthand is accepted for
+  // backward compatibility with clients that pre-date this fix; new clients
+  // should send `expires_at`. Both map to the `expires_at` DB column.
+  const { issued_by, issued_to, root_operator, parent_credential_id, scope, constraints } = body;
+  const expires_at = body.expires_at || body.expires;
 
   // Validate required fields
-  if (!issued_by || !issued_to || !root_operator || !scope || !expires) {
+  if (!issued_by || !issued_to || !root_operator || !scope || !expires_at) {
     return {
       status: 400,
-      body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires' } }
+      body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires_at' } }
     };
+  }
+
+  // BOLA: the entity on whose behalf the delegation is issued must belong to
+  // the calling registrar. `issued_by` can be an agent AXIS ID/DID or an
+  // operator-scoped identifier (e.g. axis:{operator}:operator). Look in both
+  // tables. Admin+ follows the same rule on this normal path.
+  let issuerRegistrarId = null;
+
+  const issuerAgent = await env.DB.prepare(
+    'SELECT registrar_id FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
+  ).bind(issued_by, issued_by, issued_by).first();
+  if (issuerAgent) {
+    issuerRegistrarId = issuerAgent.registrar_id;
+  } else {
+    // Try operator lookup. Operator identifiers look like "axis:{opId}:..." —
+    // fall back to matching the namespace segment against operators.id, or a
+    // bare operator id.
+    const parts = issued_by.split(':');
+    const opCandidate = parts.length >= 2 && parts[0] === 'axis' ? parts[1] : issued_by;
+    const issuerOperator = await env.DB.prepare(
+      'SELECT registrar_id FROM operators WHERE id = ?'
+    ).bind(opCandidate).first();
+    if (issuerOperator) {
+      issuerRegistrarId = issuerOperator.registrar_id;
+    }
+  }
+
+  if (issuerRegistrarId === null) {
+    return {
+      status: 404,
+      body: { error: { code: 'agent_not_found', message: `issued_by not found as agent or operator: ${issued_by}` } }
+    };
+  }
+  if (issuerRegistrarId !== registrar.id) {
+    return {
+      status: 403,
+      body: { error: { code: 'not_your_resource', message: 'issued_by belongs to a different registrar' } }
+    };
+  }
+
+  // If there's a parent credential, the caller must also own that delegation
+  // (you can't tack a child onto someone else's chain).
+  if (parent_credential_id) {
+    const parentOwn = await env.DB.prepare(
+      'SELECT registrar_id FROM delegations WHERE id = ?'
+    ).bind(parent_credential_id).first();
+    if (parentOwn && parentOwn.registrar_id !== registrar.id) {
+      return {
+        status: 403,
+        body: { error: { code: 'not_your_resource', message: 'parent_credential_id belongs to a different registrar' } }
+      };
+    }
   }
 
   // Validate scope is an array
@@ -214,7 +272,7 @@ export async function handleCreateDelegation(body, registrar, env) {
     JSON.stringify(scope),
     constraints ? JSON.stringify(constraints) : null,
     now,
-    expires,
+    expires_at,
     body.revocable !== false ? 1 : 0,
     body.proof ? JSON.stringify(body.proof) : '{}',
     registrar.id
@@ -239,6 +297,15 @@ export async function handleRevokeDelegation(delegationId, body, registrar, env)
     return {
       status: 404,
       body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+    };
+  }
+
+  // BOLA: only the owning registrar can revoke via this endpoint. Admin+
+  // callers must use POST /admin/force-revoke-delegation/:delegationId.
+  if (delegation.registrar_id !== registrar.id) {
+    return {
+      status: 403,
+      body: { error: { code: 'not_your_resource', message: 'Delegation belongs to a different registrar' } }
     };
   }
 
@@ -267,6 +334,52 @@ export async function handleRevokeDelegation(delegationId, body, registrar, env)
       status: 'revoked',
       revokedAt: now,
       cascadeRevoked: cascadeResult
+    }
+  };
+}
+
+/**
+ * Break-glass: revoke a delegation regardless of ownership. Caller must
+ * already be verified as super_admin and an audit row must have been
+ * written BEFORE calling this. Skips the ownership check only.
+ */
+export async function forceRevokeDelegation(delegationId, body, env) {
+  const delegation = await env.DB.prepare(
+    'SELECT * FROM delegations WHERE id = ?'
+  ).bind(delegationId).first();
+
+  if (!delegation) {
+    return {
+      status: 404,
+      body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+    };
+  }
+
+  if (delegation.status === 'revoked') {
+    return {
+      status: 400,
+      body: { error: { code: 'delegation_revoked', message: 'Delegation is already revoked' } }
+    };
+  }
+
+  const now = new Date().toISOString();
+  const reason = body.reason || 'admin_force';
+
+  await env.DB.prepare(
+    `UPDATE delegations SET status = 'revoked', revoked_at = ?, revocation_reason = ? WHERE id = ?`
+  ).bind(now, reason, delegationId).run();
+
+  const cascadeResult = await cascadeRevoke(delegationId, now, reason, env);
+
+  return {
+    status: 200,
+    body: {
+      delegationId,
+      status: 'revoked',
+      revokedAt: now,
+      cascadeRevoked: cascadeResult,
+      forced: true,
+      reason
     }
   };
 }
@@ -302,8 +415,10 @@ function formatDelegation(d) {
     parent_credential_id: d.parent_credential_id,
     scope: JSON.parse(d.scope),
     constraints: d.constraints ? JSON.parse(d.constraints) : {},
-    created: d.created_at,
-    expires: d.expires_at,
+    issued_at: d.created_at,           // spec field name
+    created: d.created_at,             // backward compat
+    expires_at: d.expires_at,          // spec field name
+    expires: d.expires_at,             // backward compat
     revocable: Boolean(d.revocable),
     status: d.status,
     proof: d.proof ? JSON.parse(d.proof) : {}
