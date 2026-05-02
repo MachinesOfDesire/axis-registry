@@ -130,15 +130,13 @@ export async function handleVerifyChain(agentIdentifier, env) {
 }
 
 export async function handleCreateDelegation(body, registrar, env) {
-  // Per AXIS Protocol Spec v0.1 §4.4, the canonical field is `expires`. The
-  // legacy `expires_at` alias is also accepted for backward compatibility
-  // with axis-protocol-sdk@<0.2.0 (which sent `expires_at`). Both map to
-  // the `expires_at` DB column. New clients should send `expires`.
-  const { issued_by, issued_to, root_operator, parent_credential_id, scope, constraints } = body;
-  const expires_at = body.expires || body.expires_at;
+  // Per AXIS Protocol Spec v0.1 §4.4, the canonical Delegation Credential
+  // timestamp fields are `created` and `expires`. Maps to the `expires_at`
+  // DB column.
+  const { issued_by, issued_to, root_operator, parent_credential_id, scope, constraints, expires } = body;
 
   // Validate required fields
-  if (!issued_by || !issued_to || !root_operator || !scope || !expires_at) {
+  if (!issued_by || !issued_to || !root_operator || !scope || !expires) {
     return {
       status: 400,
       body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires' } }
@@ -271,7 +269,7 @@ export async function handleCreateDelegation(body, registrar, env) {
     JSON.stringify(scope),
     constraints ? JSON.stringify(constraints) : null,
     now,
-    expires_at,
+    expires,
     body.revocable !== false ? 1 : 0,
     body.proof ? JSON.stringify(body.proof) : '{}',
     registrar.id
