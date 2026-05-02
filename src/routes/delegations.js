@@ -130,19 +130,18 @@ export async function handleVerifyChain(agentIdentifier, env) {
 }
 
 export async function handleCreateDelegation(body, registrar, env) {
-  // Per AXIS Protocol Spec v0.1, the canonical field name is `expires_at`
-  // (the spec defines Delegation Credential with `expires_at` and `issued_at`
-  // top-level fields). The historical `expires` shorthand is accepted for
-  // backward compatibility with clients that pre-date this fix; new clients
-  // should send `expires_at`. Both map to the `expires_at` DB column.
+  // Per AXIS Protocol Spec v0.1 §4.4, the canonical field is `expires`. The
+  // legacy `expires_at` alias is also accepted for backward compatibility
+  // with axis-protocol-sdk@<0.2.0 (which sent `expires_at`). Both map to
+  // the `expires_at` DB column. New clients should send `expires`.
   const { issued_by, issued_to, root_operator, parent_credential_id, scope, constraints } = body;
-  const expires_at = body.expires_at || body.expires;
+  const expires_at = body.expires || body.expires_at;
 
   // Validate required fields
   if (!issued_by || !issued_to || !root_operator || !scope || !expires_at) {
     return {
       status: 400,
-      body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires_at' } }
+      body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires' } }
     };
   }
 
@@ -415,10 +414,8 @@ function formatDelegation(d) {
     parent_credential_id: d.parent_credential_id,
     scope: JSON.parse(d.scope),
     constraints: d.constraints ? JSON.parse(d.constraints) : {},
-    issued_at: d.created_at,           // spec field name
-    created: d.created_at,             // backward compat
-    expires_at: d.expires_at,          // spec field name
-    expires: d.expires_at,             // backward compat
+    created: d.created_at,
+    expires: d.expires_at,
     revocable: Boolean(d.revocable),
     status: d.status,
     proof: d.proof ? JSON.parse(d.proof) : {}
