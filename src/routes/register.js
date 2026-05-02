@@ -16,19 +16,31 @@ export async function handleRegister(body, registrar, env) {
     return { status: 400, body: { error: { code: 'invalid_request', message: 'Missing required field: operator.domain or operator.email' } } };
   }
 
-  // Find or validate the operator
-  const operatorId = body.operator.domain
-    ? body.operator.domain.replace(/\./g, '-')
-    : body.operator.email.split('@')[0] + '-' + generateToken(4);
-
+  // Find the operator by domain or email. This endpoint does NOT create
+  // operators; callers must have run /operators/verify-domain first, which
+  // is where the operator_id is assigned. The id is deliberately not
+  // derivable from the request body here — we look up by the registered
+  // domain/email and inherit whatever opaque id the create path assigned.
+  // (Historical note: earlier versions derived id from email.split('@')[0],
+  // which leaked PII into the public layer. Fixed April 23, 2026.)
   let operator = await env.DB.prepare(
-    'SELECT * FROM operators WHERE id = ? OR domain = ? OR email = ?'
-  ).bind(operatorId, body.operator.domain || '', body.operator.email || '').first();
+    'SELECT * FROM operators WHERE domain = ? OR email = ?'
+  ).bind(body.operator.domain || '', body.operator.email || '').first();
 
   if (!operator) {
     return {
       status: 403,
       body: { error: { code: 'operator_not_found', message: 'Operator must be registered and verified before registering agents. Use /operators/verify-domain first.' } }
+    };
+  }
+
+  // BOLA: operator must belong to the calling registrar. Admin+ callers get
+  // the same rule on the normal path — to register under another registrar's
+  // operator they would need a dedicated force endpoint (not provided).
+  if (operator.registrar_id !== registrar.id) {
+    return {
+      status: 403,
+      body: { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } }
     };
   }
 
@@ -150,12 +162,16 @@ export async function handleRegister(body, registrar, env) {
     ).bind(operator.id).run();
   }
 
-  // Build response
+  // Build response. Top-level fields mirror the AXIS Agent Identity Record
+  // shape (per spec v0.1) so clients can read identity essentials without
+  // digging into the DID document's axisMetadata. Nested `document` stays
+  // for W3C DID Document compatibility.
   return {
     status: 201,
     body: {
       did,
       axis_id: axisId,
+      operator_id: `axis:${operator.id}:operator`,
       document: {
         '@context': [
           'https://www.w3.org/ns/did/v1',
