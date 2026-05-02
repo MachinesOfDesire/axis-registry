@@ -1,8 +1,11 @@
 name: Deploy to Cloudflare Workers
 
+# Disabled auto-deploy on push: the registry has no staging environment,
+# so every push to main would deploy directly to production. Manual
+# `wrangler deploy` from a developer machine is the deploy path until a
+# staging worker exists. Re-enable push by adding the trigger back AND
+# setting CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets.
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
 
 concurrency:
