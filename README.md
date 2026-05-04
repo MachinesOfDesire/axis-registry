@@ -66,14 +66,26 @@ GitHub Actions secrets (for CI deploy):
 
 Public config lives in `wrangler.toml` (`database_id`, etc. — not secret).
 
+## Running your own registry
+
+If you want to fork this and run a conformant registry under your own control,
+start with [DEPLOYMENT.md](./DEPLOYMENT.md). Requirements you must meet to be
+called an "AXIS-conformant registry" are in
+[Registry Conformance v0.1](../../registry-conformance-v0.1.md) (to be copied
+into this repo as `docs/conformance.md` when published).
+
 ## What's NOT in this repo
 
-- The AXIS Protocol specification (lives separately, pending public publication)
-- The AXIS Protocol SDK (`axis-protocol-sdk`)
+- The AXIS Protocol specification ([MachinesOfDesire/axis-protocol](https://github.com/MachinesOfDesire/axis-protocol))
+- The AXIS Protocol SDK ([axis-protocol-sdk](https://github.com/MachinesOfDesire/axis-protocol-sdk))
 - The AXIS Prime dashboard / UI (separate codebase)
 - The Kipple Labs registrar front-end (separate codebase)
 
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Security reports to
+`security@kipplelabs.com`; see [SECURITY.md](./SECURITY.md).
+
 ## License
 
-TBD — aligned with the AXIS Identity Protocol licensing decision (not yet
-finalized). This repo is private during the naming + licensing pass.
+Apache 2.0. See [LICENSE](./LICENSE).

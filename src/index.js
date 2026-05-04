@@ -10,10 +10,10 @@
 import { handleRegister } from './routes/register.js';
 import { handleResolve, handleGetAgent, extractPresentationContext } from './routes/resolve.js';
 import { handleVerifyIdentity, handleVerifyAIT, handleVerifySignature } from './routes/verify.js';
-import { handleRevocation, handleDeactivateAgent } from './routes/revocation.js';
-import { handleCreateDelegation, handleGetDelegation, handleRevokeDelegation, handleVerifyChain } from './routes/delegations.js';
+import { handleRevocation, handleDeactivateAgent, forceDeactivateAgent } from './routes/revocation.js';
+import { handleCreateDelegation, handleGetDelegation, handleRevokeDelegation, handleVerifyChain, forceRevokeDelegation } from './routes/delegations.js';
 import { handleVerifyDomain, handleCheckDomain } from './routes/operators.js';
-import { authenticateRegistrar } from './middleware/auth.js';
+import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from './middleware/auth.js';
 import { corsHeaders, handleOptions } from './middleware/cors.js';
 import { logAudit } from './utils/audit.js';
 
@@ -29,17 +29,18 @@ export default {
     }
 
     try {
+      // Authenticate up-front so we can gate routes by role.
+      // `registrar` is null if no/invalid Bearer header was sent.
+      const registrar = await authenticateRegistrar(request, env);
+
       // ==========================================
       // PUBLIC ENDPOINTS (no auth required)
       // Free, unlimited, no rate limits
       // ==========================================
 
       // GET /.well-known/axis-access — Platform-side access control policy
-      // Platforms publish their AXIS access requirements at this well-known endpoint.
-      // This is the registry's own policy (as an example of the spec).
       if (method === 'GET' && path === '/.well-known/axis-access') {
         const registryBase = env.REGISTRY_BASE_URL || 'https://axis-registry.editor-9a4.workers.dev';
-        // Derive platform_id (hostname) from the registry base URL.
         const platformId = registryBase.replace(/^https?:\/\//, '').replace(/\/$/, '');
         return addCors(jsonResponse(200, {
           axis_version: '0.1',
@@ -54,22 +55,68 @@ export default {
         }));
       }
 
-      // GET /agents?operator_id= — List agents (registrar-auth optional for filtering)
+      // GET /agents?operator_id= — List agents for an operator.
+      // AUTH REQUIRED (BOLA fix): caller must be the owning registrar or admin+.
+      // Public per-agent resolve stays at GET /agents/:axisId below (no auth).
       if (method === 'GET' && path === '/agents') {
         const operatorId = url.searchParams.get('operator_id');
-        if (operatorId) {
-          const agents = await env.DB.prepare(
-            'SELECT * FROM agents WHERE operator_id = ? ORDER BY created_at DESC'
-          ).bind(operatorId).all();
-          return addCors(jsonResponse(200, { agents: agents.results || [] }));
+        if (!operatorId) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'operator_id query parameter required' } }));
         }
-        return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'operator_id query parameter required' } }));
+        if (!registrar) {
+          return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
+        }
+        const operator = await env.DB.prepare(
+          'SELECT id, registrar_id FROM operators WHERE id = ?'
+        ).bind(operatorId).first();
+        if (!operator) {
+          return addCors(jsonResponse(404, { error: { code: 'not_found', message: `Operator not found: ${operatorId}` } }));
+        }
+        if (operator.registrar_id !== registrar.id && !isAdmin(registrar)) {
+          return addCors(jsonResponse(403, { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } }));
+        }
+        const agents = await env.DB.prepare(
+          'SELECT * FROM agents WHERE operator_id = ? ORDER BY created_at DESC'
+        ).bind(operatorId).all();
+        return addCors(jsonResponse(200, { agents: agents.results || [] }));
       }
 
-      // GET /operators/:id — Get operator info
-      // Public layer: operator_id, public_key, key_algorithm, status, axis_version, registry_url, revocation_url
-      // Presentation layer (with valid AIT): adds display_name (domain), verification_tier
-      // Private layer: email, slots, billing — NEVER returned
+      // GET /operators — List operators owned by the calling registrar.
+      // Scoped self-service endpoint. For cross-tenant listing (admin+ only)
+      // use GET /admin/operators.
+      if (method === 'GET' && path === '/operators') {
+        if (!registrar) {
+          return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
+        }
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 500);
+        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const operators = await env.DB.prepare(
+          'SELECT id, email, domain, verification_tier, domain_verified, status, created_at FROM operators WHERE registrar_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+        ).bind(registrar.id, limit, offset).all();
+        const count = await env.DB.prepare(
+          'SELECT COUNT(*) as total FROM operators WHERE registrar_id = ?'
+        ).bind(registrar.id).first();
+        return addCors(jsonResponse(200, { operators: operators.results || [], total: count?.total || 0 }));
+      }
+
+      // GET /audit — Audit log for the calling registrar's own actions
+      // and actions affecting their resources. Scoped self-service. For
+      // cross-tenant audit (admin+ only) use GET /admin/audit.
+      if (method === 'GET' && path === '/audit') {
+        if (!registrar) {
+          return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
+        }
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100'), 500);
+        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const logs = await env.DB.prepare(
+          'SELECT * FROM audit_log WHERE registrar_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+        ).bind(registrar.id, limit, offset).all();
+        return addCors(jsonResponse(200, { logs: logs.results || [] }));
+      }
+
+      // GET /operators/:id — Get operator info.
+      // Presentation layer is unlocked by: valid AIT, owning registrar,
+      // or admin+ role.
       if (method === 'GET' && path.match(/^\/operators\/([^/]+)$/)) {
         const opId = decodeURIComponent(path.match(/^\/operators\/([^/]+)$/)[1]);
         const operator = await env.DB.prepare('SELECT * FROM operators WHERE id = ?').bind(opId).first();
@@ -79,7 +126,6 @@ export default {
 
         const registryBase = env.REGISTRY_BASE_URL || 'https://axis-registry.editor-9a4.workers.dev';
 
-        // Public layer — always returned
         const response = {
           axis_version: '0.1',
           operator_id: operator.id,
@@ -90,38 +136,43 @@ export default {
           revocation_url: `${registryBase}/revocation/operator/${encodeURIComponent(operator.id)}`
         };
 
-        // Check for presentation context (valid AIT)
         const presentationContext = await extractPresentationContext(request, env);
+        const isOwner = registrar && operator.registrar_id === registrar.id;
+        const isAdminPlus = registrar && (registrar.role === 'admin' || registrar.role === 'super_admin');
+        const includePresentation = Boolean(presentationContext || isOwner || isAdminPlus);
 
-        if (presentationContext) {
-          // Presentation layer — agent is actively interacting
+        if (includePresentation) {
           response.display_name = operator.domain || operator.id;
           response.verification_tier = operator.verification_tier;
           response.registered_at = operator.created_at;
+          if (operator.domain) response.domain = operator.domain;
+          if (isOwner || isAdminPlus) {
+            // Owner and admin see additional fields that are not appropriate
+            // for the generic presentation layer (email is PII).
+            response.email = operator.email;
+            response.domain_verified = Boolean(operator.domain_verified);
+          }
         }
-
-        // Private layer: email, domain_verified, slots, stripe — NEVER returned here
 
         return addCors(jsonResponse(200, response));
       }
 
-      // GET /agents/:agent_id — Resolve agent identity record
-      // Returns public layer only (keys, status, IDs) without authentication.
-      // Include a valid AIT via Authorization header or ?ait= to get presentation layer.
+      // GET /agents/:agent_id — Resolve agent identity record (public).
+      // Presentation layer unlocked by AIT, owning registrar, or admin+.
       if (method === 'GET' && path.match(/^\/agents\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/agents/')[1]);
-        const result = await handleGetAgent(agentId, env, request);
+        const result = await handleGetAgent(agentId, env, request, registrar);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // GET /resolve/:did — Resolve DID to DID Document (W3C DID Resolution)
+      // GET /resolve/:did — Resolve DID to DID Document
       if (method === 'GET' && path.match(/^\/resolve\/(.+)$/)) {
         const did = decodeURIComponent(path.split('/resolve/')[1]);
         const result = await handleResolve(did, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // GET /verify?token=<AIT> — Verify AXIS Identity Token
+      // GET /verify?token=<AIT>
       if (method === 'GET' && path === '/verify') {
         const token = url.searchParams.get('token');
         if (token) {
@@ -130,33 +181,34 @@ export default {
         }
       }
 
-      // GET /verify/:did — Verify agent identity
+      // GET /verify/:did
       if (method === 'GET' && path.match(/^\/verify\/(.+)$/)) {
         const did = decodeURIComponent(path.split('/verify/')[1]);
         const result = await handleVerifyIdentity(did, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // POST /verify/signature — Verify a message signature
+      // POST /verify/signature
       if (method === 'POST' && path === '/verify/signature') {
         const body = await request.json();
         const result = await handleVerifySignature(body, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // GET /revocation/:agent_id — Check revocation status
+      // GET /revocation/:agent_id
       if (method === 'GET' && path.match(/^\/revocation\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/revocation/')[1]);
         const result = await handleRevocation(agentId, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // GET /delegations/:id — Get a delegation record
+      // GET /delegations/:id/chain
       if (method === 'GET' && path.match(/^\/delegations\/(.+)\/chain$/)) {
         const agentId = decodeURIComponent(path.match(/^\/delegations\/(.+)\/chain$/)[1]);
         const result = await handleVerifyChain(agentId, env);
         return addCors(jsonResponse(result.status, result.body));
       }
+      // GET /delegations/:id
       if (method === 'GET' && path.match(/^\/delegations\/(.+)$/)) {
         const delegationId = decodeURIComponent(path.split('/delegations/')[1]);
         const result = await handleGetDelegation(delegationId, env);
@@ -168,15 +220,81 @@ export default {
       // Require valid registrar API key
       // ==========================================
 
-      // Authenticate registrar for all write operations
-      const registrar = await authenticateRegistrar(request, env);
       if (!registrar && ['POST', 'PATCH', 'DELETE'].includes(method)) {
         return addCors(jsonResponse(401, {
           error: { code: 'unauthorized', message: 'Valid registrar API key required' }
         }));
       }
 
-      // POST /register — Register a new agent
+      // ==========================================
+      // BREAK-GLASS ENDPOINTS (super_admin only)
+      // Every call writes an audit row BEFORE the mutation.
+      // These must be matched BEFORE the generic /admin/* and DELETE
+      // /delegations/:id handlers so they don't fall through.
+      // ==========================================
+
+      // POST /admin/force-deactivate-agent/:agentId
+      if (method === 'POST' && path.match(/^\/admin\/force-deactivate-agent\/(.+)$/)) {
+        const denial = requireSuperAdmin(registrar);
+        if (denial) return addCors(jsonResponse(denial.status, denial.body));
+        const targetAgentId = decodeURIComponent(path.match(/^\/admin\/force-deactivate-agent\/(.+)$/)[1]);
+        let body = {};
+        try { body = await request.json(); } catch(e) {}
+        if (!body.reason || typeof body.reason !== 'string' || !body.reason.trim()) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'reason (non-empty string) is required' } }));
+        }
+        // Audit FIRST — abort if it fails.
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_log (action, actor, target, registrar_id, details, ip_address)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(
+            'force_deactivate_agent',
+            registrar.id,
+            targetAgentId,
+            registrar.id,
+            JSON.stringify({ reason: body.reason, role: registrar.role }),
+            request.headers.get('cf-connecting-ip')
+          ).run();
+        } catch (err) {
+          console.error('Force-deactivate audit write failed:', err);
+          return addCors(jsonResponse(500, { error: { code: 'audit_write_failed', message: 'Audit record could not be written; mutation aborted' } }));
+        }
+        const result = await forceDeactivateAgent(targetAgentId, body, env);
+        return addCors(jsonResponse(result.status, result.body));
+      }
+
+      // POST /admin/force-revoke-delegation/:delegationId
+      if (method === 'POST' && path.match(/^\/admin\/force-revoke-delegation\/(.+)$/)) {
+        const denial = requireSuperAdmin(registrar);
+        if (denial) return addCors(jsonResponse(denial.status, denial.body));
+        const targetDelegationId = decodeURIComponent(path.match(/^\/admin\/force-revoke-delegation\/(.+)$/)[1]);
+        let body = {};
+        try { body = await request.json(); } catch(e) {}
+        if (!body.reason || typeof body.reason !== 'string' || !body.reason.trim()) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'reason (non-empty string) is required' } }));
+        }
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_log (action, actor, target, registrar_id, details, ip_address)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(
+            'force_revoke_delegation',
+            registrar.id,
+            targetDelegationId,
+            registrar.id,
+            JSON.stringify({ reason: body.reason, role: registrar.role }),
+            request.headers.get('cf-connecting-ip')
+          ).run();
+        } catch (err) {
+          console.error('Force-revoke audit write failed:', err);
+          return addCors(jsonResponse(500, { error: { code: 'audit_write_failed', message: 'Audit record could not be written; mutation aborted' } }));
+        }
+        const result = await forceRevokeDelegation(targetDelegationId, body, env);
+        return addCors(jsonResponse(result.status, result.body));
+      }
+
+      // POST /register
       if (method === 'POST' && path === '/register') {
         const body = await request.json();
         const result = await handleRegister(body, registrar, env);
@@ -193,17 +311,17 @@ export default {
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // PATCH /agents/:agent_id — Update agent
+      // PATCH /agents/:agent_id
       if (method === 'PATCH' && path.match(/^\/agents\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/agents/')[1]);
         const body = await request.json();
-        // TODO: implement handleUpdateAgent
+        // TODO: implement handleUpdateAgent (must enforce ownership scope when implemented).
         return addCors(jsonResponse(501, {
           error: { code: 'not_implemented', message: 'Agent updates coming soon' }
         }));
       }
 
-      // DELETE /agents/:agent_id — Deactivate agent
+      // DELETE /agents/:agent_id
       if (method === 'DELETE' && path.match(/^\/agents\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/agents/')[1]);
         let body = {};
@@ -222,14 +340,14 @@ export default {
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // POST /delegations — Create delegation
+      // POST /delegations
       if (method === 'POST' && path === '/delegations') {
         const body = await request.json();
         const result = await handleCreateDelegation(body, registrar, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // DELETE /delegations/:id — Revoke delegation
+      // DELETE /delegations/:id
       if (method === 'DELETE' && path.match(/^\/delegations\/(.+)$/)) {
         const delegationId = decodeURIComponent(path.split('/delegations/')[1]);
         let body = {};
@@ -238,9 +356,19 @@ export default {
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // GET /admin/operators — List all operators (registrar-auth required)
+      // ==========================================
+      // /admin/* — admin or super_admin role required
+      // (Read-only across tenants; mutations here are the break-glass
+      // force-* endpoints handled above.)
+      // ==========================================
+
+      if (path.startsWith('/admin/')) {
+        const denial = requireAdmin(registrar);
+        if (denial) return addCors(jsonResponse(denial.status, denial.body));
+      }
+
+      // GET /admin/operators
       if (method === 'GET' && path === '/admin/operators') {
-        if (!registrar) return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         const limit = parseInt(url.searchParams.get('limit') || '50');
         const offset = parseInt(url.searchParams.get('offset') || '0');
         const operators = await env.DB.prepare(
@@ -250,10 +378,8 @@ export default {
         return addCors(jsonResponse(200, { operators: operators.results || [], total: count?.total || 0 }));
       }
 
-      // GET /admin/agents/:agent_id — Full agent record (registrar-auth required)
-      // Returns presentation-layer fields that are hidden from the public endpoint.
+      // GET /admin/agents/:agent_id
       if (method === 'GET' && path.match(/^\/admin\/agents\/(.+)$/)) {
-        if (!registrar) return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         const agentIdentifier = decodeURIComponent(path.match(/^\/admin\/agents\/(.+)$/)[1]);
         const agent = await env.DB.prepare(
           'SELECT * FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
@@ -287,9 +413,8 @@ export default {
         }));
       }
 
-      // GET /admin/agents — List all agents (registrar-auth required)
+      // GET /admin/agents
       if (method === 'GET' && path === '/admin/agents') {
-        if (!registrar) return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         const limit = parseInt(url.searchParams.get('limit') || '50');
         const offset = parseInt(url.searchParams.get('offset') || '0');
         const status = url.searchParams.get('status');
@@ -305,9 +430,8 @@ export default {
         return addCors(jsonResponse(200, { agents: agents.results || [], total: countQuery?.total || 0 }));
       }
 
-      // GET /admin/audit — List audit log (registrar-auth required)
+      // GET /admin/audit
       if (method === 'GET' && path === '/admin/audit') {
-        if (!registrar) return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         const limit = parseInt(url.searchParams.get('limit') || '100');
         const offset = parseInt(url.searchParams.get('offset') || '0');
         const logs = await env.DB.prepare(
@@ -316,9 +440,8 @@ export default {
         return addCors(jsonResponse(200, { logs: logs.results || [] }));
       }
 
-      // GET /admin/stats — Registry statistics (registrar-auth required)
+      // GET /admin/stats
       if (method === 'GET' && path === '/admin/stats') {
-        if (!registrar) return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         const [agents, operators, delegations, activeAgents] = await Promise.all([
           env.DB.prepare('SELECT COUNT(*) as total FROM agents').first(),
           env.DB.prepare('SELECT COUNT(*) as total FROM operators').first(),
@@ -333,21 +456,21 @@ export default {
         }));
       }
 
-      // POST /operators/verify-domain — Initiate domain verification
+      // POST /operators/verify-domain
       if (method === 'POST' && path === '/operators/verify-domain') {
         const body = await request.json();
         const result = await handleVerifyDomain(body, registrar, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // POST /operators/verify-domain/check — Check domain verification
+      // POST /operators/verify-domain/check
       if (method === 'POST' && path === '/operators/verify-domain/check') {
         const body = await request.json();
         const result = await handleCheckDomain(body, registrar, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // 404 for everything else
+      // 404
       return addCors(jsonResponse(404, {
         error: { code: 'not_found', message: `No route for ${method} ${path}` }
       }));

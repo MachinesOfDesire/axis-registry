@@ -67,21 +67,26 @@ export async function extractPresentationContext(request, env) {
   }
 }
 
-export async function handleGetAgent(agentId, env, request) {
+export async function handleGetAgent(agentId, env, request, registrar = null) {
   const agent = await findAgent(agentId, env);
   if (!agent) {
     return { status: 404, body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentId}` } } };
   }
 
-  // Check for presentation context (valid AIT in request)
+  // Presentation layer is unlocked by ANY of:
+  //   (a) a valid AIT in the request (an agent is asking about itself or a peer)
+  //   (b) the calling registrar owns the agent (registrar self-service)
+  //   (c) the calling registrar has admin+ role (cross-tenant support)
   const presentationContext = await extractPresentationContext(request, env);
+  const isOwner = registrar && agent.registrar_id === registrar.id;
+  const isAdminPlus = registrar && (registrar.role === 'admin' || registrar.role === 'super_admin');
+  const includePresentation = Boolean(presentationContext || isOwner || isAdminPlus);
 
-  // Look up operator verification tier (needed for presentation layer)
-  const operator = presentationContext
+  const operator = includePresentation
     ? await env.DB.prepare('SELECT verification_tier, domain FROM operators WHERE id = ?').bind(agent.operator_id).first()
     : null;
 
-  return { status: 200, body: buildAgentRecord(agent, operator, !!presentationContext, env) };
+  return { status: 200, body: buildAgentRecord(agent, operator, includePresentation, env) };
 }
 
 export async function handleResolve(did, env) {

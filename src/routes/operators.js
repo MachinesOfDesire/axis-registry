@@ -28,9 +28,14 @@ export async function handleVerifyDomain(body, registrar, env) {
 
   // Determine tier
   const tier = domain ? 'domain' : 'email';
+  // For domain-tier operators the id is derived from the already-public domain.
+  // For email-tier operators the id MUST be opaque — deriving from the email
+  // local-part leaks identifiable PII into a publicly enumerable field, which
+  // violates GDPR purpose-limitation and the Registry Conformance §8 rule that
+  // public-layer identifiers carry no identifiable personal data.
   const operatorId = domain
     ? domain.replace(/\./g, '-')
-    : email.split('@')[0] + '-' + generateToken(4);
+    : 'op-' + generateToken(12);
 
   // Check if operator already exists
   let operator = await env.DB.prepare(
@@ -41,11 +46,24 @@ export async function handleVerifyDomain(body, registrar, env) {
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(); // 72 hours
 
   if (operator) {
-    // Update verification token
+    // BOLA: operator already exists and belongs to a different registrar.
+    // A cross-registrar domain dispute/claim must go through an admin force
+    // endpoint (not exposed on this normal path). Admin+ callers hit this
+    // rule too on the normal path.
+    if (operator.registrar_id !== registrar.id) {
+      return {
+        status: 403,
+        body: { error: { code: 'not_your_resource', message: 'Operator already exists under a different registrar' } }
+      };
+    }
+    // Update verification token AND persist the claimed domain.
+    // Without writing `domain` here, handleCheckDomain's later WHERE domain=?
+    // lookup fails for operators that were pre-created (e.g. during signup)
+    // with domain=NULL and only now are claiming one.
     await env.DB.prepare(
-      `UPDATE operators SET domain_verification_token = ?, domain_verification_expires = ?,
+      `UPDATE operators SET domain = ?, domain_verification_token = ?, domain_verification_expires = ?,
        domain_verification_method = ?, updated_at = datetime('now') WHERE id = ?`
-    ).bind(token, expiresAt, verificationMethod, operator.id).run();
+    ).bind(domain || null, token, expiresAt, verificationMethod, operator.id).run();
   } else {
     // Create new operator
     await env.DB.prepare(
@@ -113,6 +131,14 @@ export async function handleCheckDomain(body, registrar, env) {
     return {
       status: 400,
       body: { error: { code: 'invalid_request', message: 'Invalid domain or token' } }
+    };
+  }
+
+  // BOLA: operator must belong to the calling registrar.
+  if (operator.registrar_id !== registrar.id) {
+    return {
+      status: 403,
+      body: { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } }
     };
   }
 
