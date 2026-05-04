@@ -1,0 +1,34 @@
+# Example wrangler config for running your own AXIS-conformant registry.
+# Copy to wrangler.toml and fill in the CHANGE-ME placeholders.
+
+name = "my-axis-registry"  # CHANGE-ME: a unique name in your Cloudflare account
+main = "src/index.js"
+compatibility_date = "2026-04-11"
+
+# CHANGE-ME: your Cloudflare account ID (Dashboard -> Workers -> Overview)
+account_id = "CHANGE-ME-your-cloudflare-account-id"
+
+# Custom domain binding. Remove this block entirely if you want to use the
+# default *.workers.dev URL instead. Cloudflare provisions DNS + SSL for
+# custom_domain routes automatically when the zone is in the same account.
+routes = [
+  { pattern = "registry.CHANGE-ME.example.com", custom_domain = true, zone_name = "CHANGE-ME.example.com" }
+]
+
+# Keep workers_dev = false if you're using a custom domain and want the
+# workers.dev URL disabled. Otherwise delete this line.
+workers_dev = false
+preview_urls = false
+
+[vars]
+# The canonical public URL of your registry. This is embedded in every
+# agent record (DID document `registry_url`) so agents resolve correctly.
+# CHANGE-ME: set to the URL clients will actually hit.
+REGISTRY_BASE_URL = "https://registry.CHANGE-ME.example.com"
+
+# D1 binding. Create the database with `wrangler d1 create my-axis-registry-db`
+# then paste the returned id here.
+[[d1_databases]]
+binding = "DB"
+database_name = "my-axis-registry-db"        # CHANGE-ME
+database_id = "CHANGE-ME-d1-database-id"     # CHANGE-ME
