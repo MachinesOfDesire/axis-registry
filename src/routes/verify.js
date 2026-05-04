@@ -119,12 +119,16 @@ export async function handleVerifyAIT(token, env) {
       };
     }
 
+    // operator_id is authoritative from the agent's row, not the AIT payload.
+    // The payload's `iss` carries the agent id; the agent's operator linkage
+    // is fixed at registration. Return canonical `axis:{slug}:operator` form
+    // so consumers (comments workers, audit pipelines) can rely on it.
     return {
       status: 200,
       body: {
         valid: true,
         agent_id: agent.axis_id,
-        operator_id: payload.operator_id,
+        operator_id: `axis:${agent.operator_id}:operator`,
         status: agent.status,
         expires_at: payload.exp ? new Date(payload.exp * 1000).toISOString() : null,
         delegation_id: payload.delegation_id || null,
