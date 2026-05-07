@@ -1,35 +1,55 @@
 # AXIS Registry
 
-Cloudflare Workers + D1 implementation of the AXIS Identity Protocol registry API.
+Cloudflare Workers + D1 implementation of the AXIS Protocol registry API.
 
-This is the **production source** for the deployed registry worker at
-`https://axis-registry.editor-9a4.workers.dev`.
+This is the **production source** for the registry deployed at
+[`registry.axisprime.ai`](https://registry.axisprime.ai). Companion projects:
 
-> ⚠️ Naming note: the protocol and product names are being finalized. The
-> codebase currently uses `axis-registry` / `axis:{operator}:{agent}` and
-> references `AXIS Protocol` in comments. Final names (likely **AXIS Identity**
-> for the protocol, **AXIS Prime** for the product, **Kipple Labs** for the
-> operating company) will be applied in a naming pass once domains are locked.
+- Protocol spec: [MachinesOfDesire/axis-protocol](https://github.com/MachinesOfDesire/axis-protocol)
+- Conformance suite: [MachinesOfDesire/axis-conformance](https://github.com/MachinesOfDesire/axis-conformance)
+- Reference SDK: [MachinesOfDesire/axis-protocol-sdk](https://github.com/MachinesOfDesire/axis-protocol-sdk)
 
 ## Layout
 
 ```
 src/
   index.js              Worker entry — route table
-  routes/               Endpoint handlers (register, resolve, verify, ...)
-  middleware/           auth, cors
+  routes/               Endpoint handlers (register, resolve, verify,
+                        delegations, revocation, operators, admin, ...)
+  middleware/           auth (three-role RBAC), cors
   utils/                crypto, audit
-schema.sql              D1 schema
-seed-key.sql            One-time registrar API-key seed (hashes only, safe to commit)
+migrations/             D1 migrations (0001 registrar roles, 0002 opaque
+                        operator IDs). Applied via `wrangler d1 execute
+                        --file`; the d1_migrations tracker is backfilled
+                        out-of-band.
+schema.sql              D1 base schema (run first on a fresh database)
+seed-key.sql            One-time registrar API-key seed (SHA-256 hash only,
+                        safe to commit; the raw key lives outside git)
 wrangler.toml           Worker config — D1 binding to axis-registry-db
+wrangler.toml.example   Sanitized template for forks
 ```
 
 ## Prerequisites
 
-- Node 18+
-- `wrangler` (Cloudflare's CLI) — `npm i -g wrangler`
+- Node 20+
+- `wrangler` 4+ (`npm i -g wrangler`)
 - A Cloudflare account with Workers + D1 enabled
-- `ADMIN_TOKEN` set as a Worker secret (`wrangler secret put ADMIN_TOKEN`)
+
+## Authorization model
+
+Three roles, enforced server-side. The SDK does not predict role locally —
+the server is the source of truth and returns `401`/`403` with stable codes
+for the SDK to branch on.
+
+| Role | Powers |
+|---|---|
+| `registrar` | Register / deactivate agents under operators it owns; create / revoke delegations issued by its agents; verify domains. |
+| `admin` | Cross-tenant read on operators, agents, audit log, and stats. Same BOLA constraints as `registrar` on the normal write paths. |
+| `super_admin` | Break-glass writes: `/admin/force-deactivate-agent/:id` and `/admin/force-revoke-delegation/:id`. Audit row is written *before* the mutation; aborts if the audit write fails. Reason is required. |
+
+Bearer-token auth via `Authorization: Bearer <key>`. Each registrar's raw
+key lives outside source control; only the SHA-256 hash is stored in the
+`registrars` table.
 
 ## Local development
 
@@ -41,30 +61,35 @@ npm run dev            # start local wrangler dev server
 
 ## Deploy
 
-**CI-based (preferred):** push to `main` triggers the GitHub Actions workflow
-at `.github/workflows/deploy.yml`, which runs `wrangler deploy`.
+Auto-deploy on push is **disabled** (`.github/workflows/deploy.yml` keeps
+`workflow_dispatch` only) until a staging environment exists. Deploy manually:
 
-**Manual:**
 ```bash
 wrangler deploy
 ```
 
-Initial schema migration to remote D1 (first deploy only, or after schema
-changes):
+For a fresh remote database:
+
 ```bash
-npm run db:init:remote
+npm run db:init:remote                                    # base schema
+wrangler d1 execute axis-registry-db --remote --file=migrations/0001_registrar_roles.sql
+wrangler d1 execute axis-registry-db --remote --file=migrations/0002_opaque_email_tier_operator_ids.sql
+# Then backfill the d1_migrations tracker so future `wrangler d1 migrations
+# apply` calls don't try to re-run them:
+wrangler d1 execute axis-registry-db --remote --command \
+  "INSERT INTO d1_migrations (name) VALUES ('0001_registrar_roles.sql'), ('0002_opaque_email_tier_operator_ids.sql')"
 ```
 
 ## Secrets and configuration
 
-Worker-side secrets (set via `wrangler secret put`):
-- `ADMIN_TOKEN` — bearer token for admin endpoints
+Public config lives in `wrangler.toml` (D1 `database_id`, `REGISTRY_BASE_URL`).
+No Worker-side secrets are required for the registry itself — registrar API
+keys are stored hashed in the `registrars` table; admin/super_admin role is
+elevated via the `registrars.role` column, not a separate token.
 
-GitHub Actions secrets (for CI deploy):
+For CI (when re-enabled):
 - `CLOUDFLARE_API_TOKEN` — scoped token with Workers + D1 deploy permissions
 - `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account ID
-
-Public config lives in `wrangler.toml` (`database_id`, etc. — not secret).
 
 ## Running your own registry
 
