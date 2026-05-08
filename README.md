@@ -53,7 +53,13 @@ key lives outside source control; only the SHA-256 hash is stored in the
 
 ## Local development
 
+First-time setup: copy the example config, fill in your own Cloudflare
+account ID and D1 database ID. The real `wrangler.toml` is git-ignored so
+your environment-specific values do not get committed.
+
 ```bash
+cp wrangler.toml.example wrangler.toml
+# edit wrangler.toml: replace every CHANGE-ME with your value
 npm install
 npm run db:init        # initialize local D1 from schema.sql
 npm run dev            # start local wrangler dev server

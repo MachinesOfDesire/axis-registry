@@ -1,6 +1,11 @@
 # Wrangler local cache + state
 .wrangler/
 
+# Real wrangler config (account_id + database_id are environment-specific).
+# Each deployer copies wrangler.toml.example -> wrangler.toml and fills in
+# their own values. The real file is intentionally not committed.
+wrangler.toml
+
 # Node
 node_modules/
 npm-debug.log*
