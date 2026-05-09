@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS registrars (
   id TEXT PRIMARY KEY,                          -- e.g., "kipple-labs"
   name TEXT NOT NULL,                           -- "Kipple Labs"
   type TEXT NOT NULL CHECK(type IN ('connected', 'private', 'root')),
-  api_key_hash TEXT NOT NULL,                   -- SHA-256 hash of API key
+  api_key_hash TEXT NOT NULL CHECK(length(api_key_hash) = 64 AND api_key_hash <> ''),  -- SHA-256 hash of API key (must be 64 hex chars; closes 2026-05-08 finding H3)
   domain TEXT,                                  -- registrar's domain
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'revoked')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),

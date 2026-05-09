@@ -80,11 +80,14 @@ For a fresh remote database:
 npm run db:init:remote                                    # base schema
 wrangler d1 execute axis-registry-db --remote --file=migrations/0001_registrar_roles.sql
 wrangler d1 execute axis-registry-db --remote --file=migrations/0002_opaque_email_tier_operator_ids.sql
+wrangler d1 execute axis-registry-db --remote --file=migrations/0003_api_key_hash_constraint.sql
 # Then backfill the d1_migrations tracker so future `wrangler d1 migrations
 # apply` calls don't try to re-run them:
 wrangler d1 execute axis-registry-db --remote --command \
-  "INSERT INTO d1_migrations (name) VALUES ('0001_registrar_roles.sql'), ('0002_opaque_email_tier_operator_ids.sql')"
+  "INSERT INTO d1_migrations (name) VALUES ('0001_registrar_roles.sql'), ('0002_opaque_email_tier_operator_ids.sql'), ('0003_api_key_hash_constraint.sql')"
 ```
+
+> Note: `schema.sql` has carried the matching `CHECK(length(api_key_hash) = 64 AND api_key_hash <> '')` constraint inline since 2026-05-08, so a fresh database created from `schema.sql` already includes the constraint. Migration 0003 only matters for existing databases that pre-date the constraint. Pre-flight check before applying it: `SELECT id, length(api_key_hash) FROM registrars WHERE api_key_hash = '' OR length(api_key_hash) <> 64;` should return zero rows.
 
 ## Secrets and configuration
 
