@@ -1,6 +1,6 @@
 {
   "name": "axis-registry",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "AXIS Protocol Registry API — Cloudflare Workers + D1",
   "type": "module",
