@@ -136,7 +136,7 @@ export async function findAgent(identifier, env) {
 }
 
 function buildAgentRecord(agent, operator, includePresentation, env) {
-  const registryBase = (env && env.REGISTRY_BASE_URL) || 'https://axis-registry.editor-9a4.workers.dev';
+  const registryBase = (env && env.REGISTRY_BASE_URL) || 'https://registry.axisprime.ai';
 
   // Public layer — always returned, no authentication required.
   // Contains only what is necessary for cryptographic verification.

@@ -40,7 +40,7 @@ export default {
 
       // GET /.well-known/axis-access — Platform-side access control policy
       if (method === 'GET' && path === '/.well-known/axis-access') {
-        const registryBase = env.REGISTRY_BASE_URL || 'https://axis-registry.editor-9a4.workers.dev';
+        const registryBase = env.REGISTRY_BASE_URL || 'https://registry.axisprime.ai';
         const platformId = registryBase.replace(/^https?:\/\//, '').replace(/\/$/, '');
         return addCors(jsonResponse(200, {
           axis_version: '0.1',
@@ -88,8 +88,8 @@ export default {
         if (!registrar) {
           return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         }
-        const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 500);
-        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500);
+        const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const operators = await env.DB.prepare(
           'SELECT id, email, domain, verification_tier, domain_verified, status, created_at FROM operators WHERE registrar_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
         ).bind(registrar.id, limit, offset).all();
@@ -106,8 +106,8 @@ export default {
         if (!registrar) {
           return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         }
-        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100'), 500);
-        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500);
+        const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const logs = await env.DB.prepare(
           'SELECT * FROM audit_log WHERE registrar_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
         ).bind(registrar.id, limit, offset).all();
@@ -124,7 +124,7 @@ export default {
           return addCors(jsonResponse(404, { error: { code: 'not_found', message: 'Operator not found' } }));
         }
 
-        const registryBase = env.REGISTRY_BASE_URL || 'https://axis-registry.editor-9a4.workers.dev';
+        const registryBase = env.REGISTRY_BASE_URL || 'https://registry.axisprime.ai';
 
         const response = {
           axis_version: '0.1',
@@ -369,8 +369,8 @@ export default {
 
       // GET /admin/operators
       if (method === 'GET' && path === '/admin/operators') {
-        const limit = parseInt(url.searchParams.get('limit') || '50');
-        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500);
+        const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const operators = await env.DB.prepare(
           'SELECT * FROM operators ORDER BY created_at DESC LIMIT ? OFFSET ?'
         ).bind(limit, offset).all();
@@ -415,8 +415,8 @@ export default {
 
       // GET /admin/agents
       if (method === 'GET' && path === '/admin/agents') {
-        const limit = parseInt(url.searchParams.get('limit') || '50');
-        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500);
+        const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const status = url.searchParams.get('status');
         let query = 'SELECT * FROM agents';
         const params = [];
@@ -432,8 +432,8 @@ export default {
 
       // GET /admin/audit
       if (method === 'GET' && path === '/admin/audit') {
-        const limit = parseInt(url.searchParams.get('limit') || '100');
-        const offset = parseInt(url.searchParams.get('offset') || '0');
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500);
+        const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const logs = await env.DB.prepare(
           'SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ? OFFSET ?'
         ).bind(limit, offset).all();
@@ -489,6 +489,19 @@ function jsonResponse(status, body) {
     status,
     headers: { 'Content-Type': 'application/json' }
   });
+}
+
+/**
+ * Parse a query-string pagination integer with bounds.
+ * Caps unbounded inputs (e.g. ?limit=999999), demotes NaN/negative to the
+ * default, and clamps to a server-side maximum so a single request can't
+ * scan the whole table.
+ */
+function clampPaginationInt(raw, defaultValue, max) {
+  if (raw === null || raw === undefined || raw === '') return defaultValue;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return defaultValue;
+  return Math.min(n, max);
 }
 
 function addCors(response) {

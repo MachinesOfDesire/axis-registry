@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "AXIS Protocol Registry API — Cloudflare Workers + D1",
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "test": "node --test \"test/*.test.js\"",
     "db:init": "wrangler d1 execute axis-registry-db --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute axis-registry-db --remote --file=./schema.sql"
   }
