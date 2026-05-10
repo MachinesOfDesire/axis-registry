@@ -4,6 +4,32 @@ All notable changes to `axis-registry` (the Cloudflare Workers + D1 implementati
 
 This worker does not follow strict semver — the wire-protocol contract is owned by the [AXIS Protocol Spec](https://github.com/MachinesOfDesire/axis-protocol). Versions on this changelog track deployable revisions of the worker code, not protocol revisions.
 
+## [0.1.2] — 2026-05-10
+
+Foundation cleanup ahead of public-launch sprint. Architecturally significant — splits the canonical AXIS registry from Kipple Labs extension services so the canonical implementation stays conformance-clean, foundation-ready, and forkable as a working AXIS without Kipple specifics. Decisions logged 2026-05-10 in [📋 AXIS Decisions Log](https://www.notion.so/34cf359483b2815eb4fcf3c98ecbf238).
+
+### Removed
+
+- **`trust_attestations` table + indexes from `schema.sql`.** Per the canonical spec (`SPEC.md` v0.1.1, axisprime.ai), Trust Attestations are advisory and *"stored by the issuer, not the registry."* The table had been defined since the initial commit but never wired to a route handler — pure schema drift. Removed; affects fresh deployments only.
+- **`content_provenance_attestations` table + indexes from `schema.sql`.** Same reasoning; same status (defined but never used).
+
+Existing live databases keep these tables as empty no-ops until a follow-up migration drops them. No data migration is required because no data was ever written to them.
+
+### Added
+
+- **`schema.sql` header comment** documenting Layer 1 + Layer 2 scope and the canonical/extensions architectural separation.
+- **`wrangler.toml.example`**: added an optional `EXTENSIONS` D1 binding block (commented out by default). Forks running their own canonical registry can ignore the binding entirely; registrars running Layer 3 services on top can uncomment and point at their own extension database.
+- **`README.md` Scope section** explaining the L1+L2 commitment and the canonical / extensions split. Forkers know up front what's in this repo and what isn't.
+
+### Provisioned
+
+- **`kipple-extensions` D1 database** (`7245f283-82c1-4529-bdb0-b36a353b6c83`) on the Kipple Labs Cloudflare account. Initially empty. Will host Kipple Labs L3 services as they come online (trust attestations, content provenance attestations, compliance kit bundles). Cross-references to canonical data are by `agent_id` / `operator_id` strings, never SQL JOINs across the boundary.
+
+### Out of scope (deferred)
+
+- Migration to drop the inert L3 tables from existing live databases. Low priority; tables are empty no-ops. Will land when a follow-up migration is convenient.
+- Wiring any L3 service to the new `EXTENSIONS` binding. None exist yet; the binding is in place as architectural commitment, not because any code uses it today.
+
 ## [0.1.1] — 2026-05-09
 
 First tagged release. The repo was made public on 2026-05-08; this release captures the full state of `main` as of the public-readiness pass plus the post-public hardening pass on 2026-05-09.

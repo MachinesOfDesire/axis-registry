@@ -26,9 +26,28 @@ preview_urls = false
 # CHANGE-ME: set to the URL clients will actually hit.
 REGISTRY_BASE_URL = "https://registry.CHANGE-ME.example.com"
 
-# D1 binding. Create the database with `wrangler d1 create my-axis-registry-db`
-# then paste the returned id here.
+# Canonical AXIS registry D1 binding. This is the only D1 the canonical
+# registry needs — registrars, operators, agents, agent_slots, delegations,
+# audit_log. Create with `wrangler d1 create my-axis-registry-db` then
+# paste the returned id here.
 [[d1_databases]]
 binding = "DB"
 database_name = "my-axis-registry-db"        # CHANGE-ME
 database_id = "CHANGE-ME-d1-database-id"     # CHANGE-ME
+
+# Optional: a separate D1 binding for Layer 3 artifacts (Trust Attestations,
+# Content Provenance Attestations) and any registrar-specific extension
+# records. Per the canonical AXIS spec, L3 is advisory and stored by the
+# issuer — not by the canonical registry. If you do not run L3 services,
+# remove this block entirely.
+#
+# Kipple Labs runs L3 services on top of the canonical registry. The
+# extensions database (`kipple-extensions` on the production deploy) is
+# referenced from extension-only code paths via cross-DB string references
+# (`agent_id` / `operator_id`), never via SQL JOINs across the boundary.
+# This keeps the canonical registry's wire and code surface conformance-clean.
+#
+# [[d1_databases]]
+# binding = "EXTENSIONS"
+# database_name = "my-axis-extensions"        # CHANGE-ME (or remove this block)
+# database_id = "CHANGE-ME-extensions-db-id"  # CHANGE-ME

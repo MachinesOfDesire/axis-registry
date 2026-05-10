@@ -1,6 +1,6 @@
 # AXIS Registry
 
-Cloudflare Workers + D1 implementation of the AXIS Protocol registry API.
+Cloudflare Workers + D1 implementation of the **canonical** AXIS Protocol registry API.
 
 This is the **production source** for the registry deployed at
 [`registry.axisprime.ai`](https://registry.axisprime.ai). Companion projects:
@@ -8,6 +8,20 @@ This is the **production source** for the registry deployed at
 - Protocol spec: [MachinesOfDesire/axis-protocol](https://github.com/MachinesOfDesire/axis-protocol)
 - Conformance suite: [MachinesOfDesire/axis-conformance](https://github.com/MachinesOfDesire/axis-conformance)
 - Reference SDK: [MachinesOfDesire/axis-protocol-sdk](https://github.com/MachinesOfDesire/axis-protocol-sdk)
+
+## Scope
+
+This implementation stores **Layer 1 (Identity)** and **Layer 2 (Authorization)** records only — registrars, operators, agents, agent slots, delegations, audit log. That's everything a verifier needs to validate an AIT or walk a delegation chain.
+
+Layer 3 artifacts (Trust Attestations, Content Provenance Attestations) are explicitly **NOT** stored here. Per the canonical spec (`SPEC.md` v0.1.1): *"Layers 1 and 2 are mandatory for any verification. Layer 3 is advisory."* L3 records are stored by the issuer; for Kipple Labs as one issuer, those live in a separate codebase + database (`kipple-extensions`), not in this canonical registry.
+
+This separation matters because:
+
+1. **Conformance clarity** — anyone forking this repo gets a working AXIS implementation, not a Kipple-specific superset.
+2. **Foundation readiness** — when independent governance forms (post-solvency), this canonical schema is what's handed off; no Kipple cleanup needed.
+3. **Open-source path** — the canonical registry can accept community contributions without exposing extension internals.
+
+If you fork this for your own conformant registry, you can ignore everything in this repo about `kipple-extensions`. The `axis-registry-db` binding is the only D1 that the canonical registry needs.
 
 ## Layout
 
