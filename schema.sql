@@ -1,6 +1,16 @@
 -- AXIS Registry D1 Schema
 -- Version: 0.1.0
 -- Database: Cloudflare D1 (SQLite)
+--
+-- SCOPE: Canonical AXIS registry stores Layer 1 (Identity) + Layer 2 (Authorization) only.
+-- Per the canonical spec (https://github.com/MachinesOfDesire/axis-protocol SPEC.md v0.1.1
+-- and axisprime.ai): "Layers 1 and 2 are mandatory for any verification. Layer 3 is advisory."
+-- Trust Attestations are explicitly "stored by the issuer, not the registry."
+--
+-- Layer 3 artifacts (Trust Attestations, Content Provenance Attestations) live in
+-- separate Kipple Labs extension databases, NOT in this canonical registry. This
+-- separation keeps the canonical registry implementation conformance-clean and
+-- foundation-ready.
 
 -- ============================================
 -- REGISTRARS
@@ -113,52 +123,14 @@ CREATE INDEX IF NOT EXISTS idx_delegations_parent ON delegations(parent_credenti
 CREATE INDEX IF NOT EXISTS idx_delegations_status ON delegations(status);
 
 -- ============================================
--- TRUST ATTESTATIONS
--- Reputation layer (Layer 3)
+-- (Layer 3 tables removed 2026-05-10)
+-- Trust Attestations and Content Provenance Attestations are NOT canonical
+-- registry primitives per the AXIS spec. They are advisory artifacts stored
+-- by the issuer (typically Kipple Labs as a service operator, or the
+-- platform that produced the content). Removed because they were defined
+-- here but never wired up to any route handler — pure schema drift.
+-- See AXIS Decisions Log entry 2026-05-10.
 -- ============================================
-CREATE TABLE IF NOT EXISTS trust_attestations (
-  id TEXT PRIMARY KEY,                          -- ta:{namespace}:{id}
-  issued_by TEXT NOT NULL,                      -- AXIS ID or DID of attester
-  subject TEXT NOT NULL,                        -- AXIS ID or DID of subject
-  scope TEXT NOT NULL,                          -- domain of trust (e.g., "editorial:research")
-  level INTEGER NOT NULL CHECK(level >= 1 AND level <= 5),
-  statement TEXT,
-  evidence TEXT,                                -- JSON array of evidence objects
-  signature TEXT NOT NULL,                      -- Ed25519 signature
-  issued_at TEXT NOT NULL DEFAULT (datetime('now')),
-  expires_at TEXT,
-  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'revoked', 'expired')),
-  registrar_id TEXT NOT NULL,
-  FOREIGN KEY (registrar_id) REFERENCES registrars(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_ta_subject ON trust_attestations(subject);
-CREATE INDEX IF NOT EXISTS idx_ta_issued_by ON trust_attestations(issued_by);
-
--- ============================================
--- CONTENT PROVENANCE ATTESTATIONS
--- Content governance chain (Layer 3)
--- ============================================
-CREATE TABLE IF NOT EXISTS content_provenance_attestations (
-  id TEXT PRIMARY KEY,                          -- cpa:{namespace}:{id}
-  content_id TEXT NOT NULL,                     -- URI of the content
-  content_hash_algorithm TEXT,                  -- sha-256, sha-384, sha-512
-  content_hash_value TEXT,                      -- hex-encoded hash
-  produced_by TEXT NOT NULL,                    -- AXIS ID or DID
-  produced_under_credential TEXT NOT NULL,      -- delegation credential ID
-  reviewed_by TEXT NOT NULL,                    -- AXIS ID or DID
-  approved_at TEXT NOT NULL,
-  root_operator TEXT NOT NULL,
-  metadata TEXT,                                -- JSON object (content_type, title, tags)
-  signature TEXT NOT NULL,                      -- Ed25519 signature
-  registrar_id TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (produced_under_credential) REFERENCES delegations(id),
-  FOREIGN KEY (registrar_id) REFERENCES registrars(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_cpa_content ON content_provenance_attestations(content_id);
-CREATE INDEX IF NOT EXISTS idx_cpa_produced_by ON content_provenance_attestations(produced_by);
 
 -- ============================================
 -- AGENT SLOTS
