@@ -121,9 +121,32 @@ Your registry is conformant if it behaves according to [Registry Conformance v0.
 
 At Cloudflare's current pricing, running the registry for a small federation (thousands of operators, hundreds of thousands of agent resolutions per month) sits in the low-tens of dollars per month. The dominant cost is D1 read rows. This is a single-digit line item, not a business model driver.
 
+## Rate limiting & abuse-traffic notifications
+
+The worker now ships with four Cloudflare Workers Rate Limiting bindings (see `wrangler.toml.example` and `src/middleware/rate-limit.js`). They are tier-based:
+
+| Binding | Default | Bucket key | Applies to |
+|---------|---------|------------|------------|
+| `RL_PUBLIC_READ` | 6000 req/min | `cf-connecting-ip` | Most `GET` paths (`/agents/:id`, `/resolve/:did`, `/verify/:did`, `/revocation/:agent_id`, `/delegations/:id`, `/delegations/:id/chain`) |
+| `RL_PUBLIC_VERIFY_SIG` | 600 req/min | `cf-connecting-ip` | `GET /verify?token=…` (Ed25519 verify is more expensive than a row read) |
+| `RL_REGISTRAR` | 300 req/min | `reg:<registrar.id>` | All authenticated mutations (registrar-owned, per-key) |
+| `RL_AUTH_FAIL` | 30 req/min | `cf-connecting-ip` | Mutating requests that arrive WITHOUT a valid Bearer (slows credential stuffing) |
+
+A 429 response includes `Retry-After: 60`. Clients should treat 429 as transient and back off — none of these limits are designed to block legitimate traffic.
+
+**To tune** the values, edit the `simple = { limit, period }` on each binding in `wrangler.toml` and re-deploy. Periods must be 10 or 60 seconds (Cloudflare constraint).
+
+**To get notifications** when traffic hits a limit:
+
+1. *In code (already wired):* every rate-limit hit emits a structured log line tagged `RATE_LIMIT_HIT` (key prefix, tier, URL, method, `cf-ray`). `RATE_LIMIT_CHECK_FAILED` covers the binding-misconfigured case.
+2. *In the Cloudflare dashboard:* Workers & Pages → your worker → **Logs → Logpush** → create a new job that filters on `tag = "RATE_LIMIT_HIT"` and delivers to your destination (Slack/Discord webhook, email via Mailgun/Postmark, R2 + Sentry, etc.). 5-minute setup.
+3. *In the Cloudflare dashboard:* Notifications → Add → **HTTP DDoS attack alerter** and **Workers > Errors > Threshold** both give you out-of-the-box anomaly alerts without per-event noise.
+
+**WAF rule (optional, recommended pre-launch):** Security → WAF → Rate limiting rules → add a zone-level rule. The Workers-side limit catches abuse *after* it enters the worker (still cheap). A WAF rule catches it at the edge, before any worker invocation. Suggested: 1000 req/min per IP zone-wide as a hard backstop above the per-binding limits. Free tier supports 1 zone rule; Pro+ supports more.
+
 ## Known limitations of the reference implementation
 
-- **Rate limiting is minimal.** Cloudflare's infrastructure provides the baseline; per-registrar application-level limits are TODO.
+- **Application-level rate limiting is now wired** (see above), but **tier values are unverified against production traffic.** Watch the first few weeks of `RATE_LIMIT_HIT` log lines and tune.
 - **Retention enforcement is not yet automated.** Audit records persist indefinitely by default. You can enforce minimum retention manually or via scheduled Workers.
 - **No built-in metrics dashboard.** `GET /admin/stats` returns counts; deeper observability is your responsibility (Cloudflare Analytics, external tooling).
 - **No federation discovery.** If you run your registry, consumers must be told its URL. There is no registry-of-registries yet.

@@ -15,6 +15,7 @@ import { handleCreateDelegation, handleGetDelegation, handleRevokeDelegation, ha
 import { handleVerifyDomain, handleCheckDomain } from './routes/operators.js';
 import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from './middleware/auth.js';
 import { corsHeaders, handleOptions } from './middleware/cors.js';
+import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit.js';
 import { logAudit } from './utils/audit.js';
 
 export default {
@@ -32,6 +33,28 @@ export default {
       // Authenticate up-front so we can gate routes by role.
       // `registrar` is null if no/invalid Bearer header was sent.
       const registrar = await authenticateRegistrar(request, env);
+
+      // ==========================================
+      // RATE LIMITING (C3)
+      // Choose a tier based on (method, path, registrar) and bucket by
+      // either registrar.id (authenticated) or cf-connecting-ip (public).
+      // If the tier binding isn't configured (local dev / minimal fork),
+      // checkRateLimit is a no-op. See middleware/rate-limit.js for the
+      // tier descriptions and wrangler.toml.example for the binding shape.
+      // ==========================================
+      const rateLimitDecision = await pickRateLimitTier(method, path, registrar, request);
+      if (rateLimitDecision) {
+        const denial = await checkRateLimit(
+          env,
+          rateLimitDecision.tier,
+          rateLimitDecision.key,
+          request,
+          ctx
+        );
+        if (denial) {
+          return addCors(jsonResponse(denial.status, denial.body, denial.headers));
+        }
+      }
 
       // ==========================================
       // PUBLIC ENDPOINTS (no auth required)
@@ -551,11 +574,55 @@ export default {
   }
 };
 
-function jsonResponse(status, body) {
+function jsonResponse(status, body, extraHeaders = {}) {
   return new Response(JSON.stringify(body, null, 2), {
     status,
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json', ...extraHeaders }
   });
+}
+
+/**
+ * Decide which rate-limit tier (if any) a given request falls under and
+ * what its bucket key should be. Returns null for routes we intentionally
+ * leave unrated (e.g. `OPTIONS` preflight, `/.well-known/axis-access`
+ * health-style reads).
+ *
+ * Keep the matching loose — the tier check is defense-in-depth and we
+ * don't need the bucket to be perfectly partitioned by route. Where two
+ * tiers could apply (e.g. an authenticated mutation), the more specific
+ * (REGISTRAR / AUTH_FAIL) wins over PUBLIC_READ.
+ */
+async function pickRateLimitTier(method, path, registrar, request) {
+  // Skip preflights and the well-known health endpoint.
+  if (method === 'OPTIONS') return null;
+  if (path === '/.well-known/axis-access') return null;
+
+  const mutating = ['POST', 'PATCH', 'DELETE'].includes(method);
+
+  // Mutating requests without a valid Bearer = AUTH_FAIL tier (slows brute force).
+  if (mutating && !registrar) {
+    return { tier: RATE_LIMIT_TIERS.AUTH_FAIL, key: ipKey(request) };
+  }
+
+  // Mutating requests with a valid Bearer = REGISTRAR tier (per-key bucket).
+  if (mutating && registrar) {
+    return { tier: RATE_LIMIT_TIERS.REGISTRAR, key: `reg:${registrar.id}` };
+  }
+
+  // GET /verify (token mode) and POST /verify/signature are the only
+  // CPU-heavy public paths. POST /verify/signature is caught by the
+  // mutating-without-auth branch above when unauthed, but the GET /verify
+  // path is here. Tier on the more conservative VERIFY_SIG bucket.
+  if (method === 'GET' && path === '/verify') {
+    return { tier: RATE_LIMIT_TIERS.PUBLIC_VERIFY_SIG, key: ipKey(request) };
+  }
+
+  // Everything else that's a read = PUBLIC_READ.
+  if (method === 'GET') {
+    return { tier: RATE_LIMIT_TIERS.PUBLIC_READ, key: ipKey(request) };
+  }
+
+  return null;
 }
 
 /**

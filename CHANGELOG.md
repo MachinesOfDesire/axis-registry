@@ -6,6 +6,12 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Security
+
+- **C3 — application-level rate limiting via Cloudflare Workers Rate Limiting bindings.** Four tiers (`RL_PUBLIC_READ`, `RL_PUBLIC_VERIFY_SIG`, `RL_REGISTRAR`, `RL_AUTH_FAIL`) with sensible defaults sized to absorb the chatty-platform AI-comment-verification flow without throttling legitimate traffic. Auth-fail tier (30 req/min per IP on mutating requests with no/invalid Bearer) is the credential-stuffing brake. Each tier hit emits a structured `RATE_LIMIT_HIT` log line (key prefix, tier, URL, method, `cf-ray`) for Logpush filtering. If a binding is unset (local dev / minimal fork) the helper is a no-op, so test environments are unaffected. 429 responses include `Retry-After: 60`. Tier values + Logpush + WAF dashboard handoff documented in `DEPLOYMENT.md`. No wire-protocol change.
+
+
+
 ### Fixed
 
 - **`migrations/0003_api_key_hash_constraint.sql` replay safety.** The migration as merged contained `BEGIN TRANSACTION` / `COMMIT` (D1 rejects) and a positional `INSERT ... SELECT *` (mismaps because `role` was appended by migration 0001 to position 10 in the live table, not position 7 as in the rebuild target). Live D1 was migrated on 2026-05-11 using a corrected variant; this commit aligns the file in the repo with what actually ran so future replays / forks work.
