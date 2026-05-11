@@ -21,7 +21,16 @@ CREATE TABLE IF NOT EXISTS registrars (
   id TEXT PRIMARY KEY,                          -- e.g., "kipple-labs"
   name TEXT NOT NULL,                           -- "Kipple Labs"
   type TEXT NOT NULL CHECK(type IN ('connected', 'private', 'root')),
-  api_key_hash TEXT NOT NULL,                   -- SHA-256 hash of API key
+  api_key_hash TEXT NOT NULL                    -- SHA-256 hash of API key
+    CHECK(length(api_key_hash) = 64 AND api_key_hash <> ''),
+                                                -- H3 hardening: hash must be a
+                                                -- real 64-char SHA-256. An empty
+                                                -- string would let `Bearer ` (empty)
+                                                -- authenticate via SHA-256("") matched
+                                                -- against a seeded '' row. Per the
+                                                -- 2026-05-08 security review,
+                                                -- axis-registry H3. Live databases
+                                                -- inherit this via migration 0003.
   domain TEXT,                                  -- registrar's domain
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'revoked')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),

@@ -10,6 +10,14 @@
  *   - 'super_admin'             — admin + break-glass /admin/force-* mutation endpoints
  */
 
+// Minimum credible API-key length. Real Kipple-issued keys are 64 hex chars
+// (the `secret` half of an `<id>:<secret>` pair). 32 is a conservative floor
+// that rejects empty, near-empty, and accidentally-truncated values before
+// they reach SHA-256. Hardens against H3 even when paired with the schema's
+// CHECK constraint, since the middleware is the first line of defense and a
+// cheap reject is preferable to a hash + table scan + miss.
+const MIN_API_KEY_LENGTH = 32;
+
 export async function authenticateRegistrar(request, env) {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -17,6 +25,14 @@ export async function authenticateRegistrar(request, env) {
   }
 
   const apiKey = authHeader.slice(7);
+  // H3 hardening: reject obviously-invalid Bearer values before SHA-256. An
+  // empty Bearer (`Authorization: Bearer `) hashed against a row whose
+  // api_key_hash had drifted to '' would otherwise authenticate. The schema
+  // CHECK added in migration 0003 prevents the drift; this check prevents
+  // the auth attempt from ever consuming compute.
+  if (apiKey.length < MIN_API_KEY_LENGTH) {
+    return null;
+  }
   const keyHash = await hashApiKey(apiKey);
 
   const registrar = await env.DB.prepare(
