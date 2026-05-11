@@ -37,10 +37,12 @@ export async function handleVerifyDomain(body, registrar, env) {
     ? domain.replace(/\./g, '-')
     : 'op-' + generateToken(12);
 
-  // Check if operator already exists
+  // Check if operator already exists.
+  // M1: bind NULL (not '') when no domain is supplied — binding '' could
+  // accidentally match a drifted row stored with domain=''.
   let operator = await env.DB.prepare(
     'SELECT * FROM operators WHERE domain = ? OR email = ?'
-  ).bind(domain || '', email).first();
+  ).bind(domain ? domain : null, email).first();
 
   const token = generateToken(16);
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(); // 72 hours
@@ -191,11 +193,41 @@ export async function handleCheckDomain(body, registrar, env) {
   };
 }
 
-async function verifyDNS(domain, token) {
-  // Use Cloudflare DNS-over-HTTPS to check for the TXT record
+// M6: defense-in-depth on outbound fetches from the verifier. The Workers
+// runtime already blocks RFC1918 / link-local, so SSRF blast radius is
+// bounded — these checks ensure callers can't smuggle nonsense into the
+// URL we construct (e.g. `evil.com/x?` segments), and that a hung target
+// can't pin a worker invocation open.
+
+// RFC 1035 + RFC 1123 hostname shape. Labels: 1-63 chars, alphanumeric or
+// hyphen, must not start/end with hyphen. Total length <= 253 chars.
+// Underscore labels are not strictly RFC-1035 but are allowed by some
+// platforms; we reject them here because they shouldn't appear in operator
+// domains and admitting them widens the validation surface.
+const DOMAIN_SHAPE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const VERIFY_FETCH_TIMEOUT_MS = 5000;
+
+function isValidDomain(domain) {
+  return typeof domain === 'string' && DOMAIN_SHAPE.test(domain);
+}
+
+async function fetchWithTimeout(url, init = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), VERIFY_FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(
-      `https://cloudflare-dns.com/dns-query?name=_axis-verify.${domain}&type=TXT`,
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyDNS(domain, token) {
+  if (!isValidDomain(domain)) return false;
+  // Use Cloudflare DNS-over-HTTPS to check for the TXT record.
+  // `domain` is shape-validated above, so the interpolation is safe.
+  try {
+    const resp = await fetchWithTimeout(
+      `https://cloudflare-dns.com/dns-query?name=_axis-verify.${encodeURIComponent(domain)}&type=TXT`,
       { headers: { 'Accept': 'application/dns-json' } }
     );
     const data = await resp.json();
@@ -205,14 +237,15 @@ async function verifyDNS(domain, token) {
       );
     }
   } catch (err) {
-    console.error('DNS verification error:', err);
+    console.error('DNS verification error:', err && err.message ? err.message : err);
   }
   return false;
 }
 
 async function verifyHTTP(domain, token) {
+  if (!isValidDomain(domain)) return false;
   try {
-    const resp = await fetch(`https://${domain}/.well-known/axis-verify.json`, {
+    const resp = await fetchWithTimeout(`https://${domain}/.well-known/axis-verify.json`, {
       headers: { 'Accept': 'application/json' }
     });
     if (resp.ok) {
@@ -220,7 +253,7 @@ async function verifyHTTP(domain, token) {
       return data['axis-verify'] === token;
     }
   } catch (err) {
-    console.error('HTTP verification error:', err);
+    console.error('HTTP verification error:', err && err.message ? err.message : err);
   }
   return false;
 }

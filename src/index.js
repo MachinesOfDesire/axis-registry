@@ -534,6 +534,15 @@ export default {
       }));
 
     } catch (err) {
+      // M7: decodeURIComponent on malformed percent-encoding throws URIError;
+      // surface as a client-error 400 instead of a generic 500. This catches
+      // every decodeURIComponent call site in the file at once without
+      // requiring 14 inline try/catch wrappers.
+      if (err instanceof URIError) {
+        return addCors(jsonResponse(400, {
+          error: { code: 'invalid_encoding', message: 'URL contains malformed percent-encoding' }
+        }));
+      }
       console.error('Unhandled error:', err);
       return addCors(jsonResponse(500, {
         error: { code: 'internal_error', message: 'Internal server error' }

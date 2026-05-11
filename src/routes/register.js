@@ -23,9 +23,16 @@ export async function handleRegister(body, registrar, env) {
   // domain/email and inherit whatever opaque id the create path assigned.
   // (Historical note: earlier versions derived id from email.split('@')[0],
   // which leaked PII into the public layer. Fixed April 23, 2026.)
+  // M1: coerce empty/missing to NULL. Binding '' would silently match a
+  // row whose domain or email was stored as the empty string (drift) and
+  // would not match NULL rows in either case (since `'' = NULL` is unknown).
+  // NULL bind keeps `domain = NULL` unmatched and is the correct signal for
+  // "no value provided," surfacing the missing-operator case as a 404.
+  const opDomain = body.operator.domain ? body.operator.domain : null;
+  const opEmail = body.operator.email ? body.operator.email : null;
   let operator = await env.DB.prepare(
     'SELECT * FROM operators WHERE domain = ? OR email = ?'
-  ).bind(body.operator.domain || '', body.operator.email || '').first();
+  ).bind(opDomain, opEmail).first();
 
   if (!operator) {
     return {
