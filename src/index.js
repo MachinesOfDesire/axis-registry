@@ -88,7 +88,7 @@ export default {
         if (!registrar) {
           return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         }
-        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500);
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500, 1);
         const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const operators = await env.DB.prepare(
           'SELECT id, email, domain, verification_tier, domain_verified, status, created_at FROM operators WHERE registrar_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
@@ -106,7 +106,7 @@ export default {
         if (!registrar) {
           return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
         }
-        const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500);
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500, 1);
         const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const logs = await env.DB.prepare(
           'SELECT * FROM audit_log WHERE registrar_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
@@ -369,7 +369,7 @@ export default {
 
       // GET /admin/operators
       if (method === 'GET' && path === '/admin/operators') {
-        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500);
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500, 1);
         const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const operators = await env.DB.prepare(
           'SELECT * FROM operators ORDER BY created_at DESC LIMIT ? OFFSET ?'
@@ -415,24 +415,39 @@ export default {
 
       // GET /admin/agents
       if (method === 'GET' && path === '/admin/agents') {
-        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500);
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500, 1);
         const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
-        const status = url.searchParams.get('status');
-        let query = 'SELECT * FROM agents';
-        const params = [];
-        if (status) { query += ' WHERE status = ?'; params.push(status); }
-        query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-        params.push(limit, offset);
-        const agents = await env.DB.prepare(query).bind(...params).all();
-        const countQuery = status
-          ? await env.DB.prepare('SELECT COUNT(*) as total FROM agents WHERE status = ?').bind(status).first()
+        const statusFilter = url.searchParams.get('status');
+        // H4 hardening: allowlist `status` against the schema's CHECK values
+        // (agents.status). Reject anything outside that set with 400 — both
+        // forces the schema to be the single source of truth for valid status
+        // values, and removes any future risk of a downstream SQL concat
+        // around this parameter. Per the 2026-05-08 security review.
+        const AGENT_STATUS_VALUES = ['active', 'suspended', 'revoked', 'deactivated'];
+        if (statusFilter !== null && !AGENT_STATUS_VALUES.includes(statusFilter)) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: `status must be one of: ${AGENT_STATUS_VALUES.join(', ')}` } }));
+        }
+        // H4 hardening: two static prepared statements rather than a dynamic
+        // `query += ...` concatenation. Parameterization was correct in the
+        // prior implementation, but the pattern is a footgun for future
+        // contributors who may not preserve it on additions. Static SQL keeps
+        // it cheap to audit and impossible to regress accidentally.
+        const agents = statusFilter
+          ? await env.DB.prepare(
+              'SELECT * FROM agents WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+            ).bind(statusFilter, limit, offset).all()
+          : await env.DB.prepare(
+              'SELECT * FROM agents ORDER BY created_at DESC LIMIT ? OFFSET ?'
+            ).bind(limit, offset).all();
+        const countQuery = statusFilter
+          ? await env.DB.prepare('SELECT COUNT(*) as total FROM agents WHERE status = ?').bind(statusFilter).first()
           : await env.DB.prepare('SELECT COUNT(*) as total FROM agents').first();
         return addCors(jsonResponse(200, { agents: agents.results || [], total: countQuery?.total || 0 }));
       }
 
       // GET /admin/audit
       if (method === 'GET' && path === '/admin/audit') {
-        const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500);
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500, 1);
         const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
         const logs = await env.DB.prepare(
           'SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ? OFFSET ?'
@@ -493,14 +508,19 @@ function jsonResponse(status, body) {
 
 /**
  * Parse a query-string pagination integer with bounds.
- * Caps unbounded inputs (e.g. ?limit=999999), demotes NaN/negative to the
- * default, and clamps to a server-side maximum so a single request can't
+ * Caps unbounded inputs (e.g. ?limit=999999), demotes NaN/negative/below-min to
+ * the default, and clamps to a server-side maximum so a single request can't
  * scan the whole table.
+ *
+ * `min` is the smallest acceptable value (default 0 — fine for offsets).
+ * Callers using this for LIMIT should pass `min = 1` so `?limit=0` (a no-op
+ * query that returns zero rows) is demoted to the default. H5 hardening per
+ * the 2026-05-08 security review.
  */
-function clampPaginationInt(raw, defaultValue, max) {
+function clampPaginationInt(raw, defaultValue, max, min = 0) {
   if (raw === null || raw === undefined || raw === '') return defaultValue;
   const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) return defaultValue;
+  if (!Number.isFinite(n) || n < min) return defaultValue;
   return Math.min(n, max);
 }
 

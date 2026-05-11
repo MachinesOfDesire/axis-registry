@@ -4,6 +4,13 @@ All notable changes to `axis-registry` (the Cloudflare Workers + D1 implementati
 
 This worker does not follow strict semver — the wire-protocol contract is owned by the [AXIS Protocol Spec](https://github.com/MachinesOfDesire/axis-protocol). Versions on this changelog track deployable revisions of the worker code, not protocol revisions.
 
+## [Unreleased]
+
+### Security
+
+- **H4 — `/admin/agents` static prepared statements + status allowlist.** Previously the handler concatenated an optional `WHERE status = ?` fragment into the query string. The bind was parameterized so this was not SQL injection in practice, but the dynamic-string-build pattern is a footgun and tripped review. Refactored to two static prepared statements (with-status / without-status) selected by branch, and an explicit allowlist (`['active', 'suspended', 'revoked', 'deactivated']`) that returns 400 `invalid_request` for unknown status values instead of silently running a query that matches zero rows.
+- **H5 — `LIMIT` floor on pagination.** `clampPaginationInt` previously demoted `NaN` / negative values but accepted `0`, which D1 honors as "return zero rows." Added a `min` parameter (default 0 for offsets, 1 for limits) so `?limit=0` now falls back to the default page size. All five `LIMIT` call sites pass `min=1`; `OFFSET` call sites keep the default. No wire-protocol change.
+
 ## [0.1.2] — 2026-05-10
 
 Foundation cleanup ahead of public-launch sprint. Architecturally significant — splits the canonical AXIS registry from Kipple Labs extension services so the canonical implementation stays conformance-clean, foundation-ready, and forkable as a working AXIS without Kipple specifics. Decisions logged 2026-05-10 in [📋 AXIS Decisions Log](https://www.notion.so/34cf359483b2815eb4fcf3c98ecbf238).
