@@ -167,13 +167,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
   operator_id TEXT,
   registrar_id TEXT,
   details TEXT,                                 -- JSON blob with action-specific data
-  ip_address TEXT
+  ip_address TEXT,
+  target_registrar_id TEXT                      -- owning registrar of the targeted resource (H7); NULL for older rows and non-mutation actions
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_operator ON audit_log(operator_id);
 CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target);
+CREATE INDEX IF NOT EXISTS idx_audit_target_registrar ON audit_log(target_registrar_id);
 
 -- ============================================
 -- SEED DATA

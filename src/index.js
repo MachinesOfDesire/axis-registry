@@ -108,9 +108,13 @@ export default {
         }
         const limit = clampPaginationInt(url.searchParams.get('limit'), 100, 500, 1);
         const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
+        // H7: also surface rows where the caller is the *target* registrar,
+        // not just the actor. /admin/force-* writes the super_admin's id as
+        // registrar_id; target_registrar_id captures the owning registrar
+        // so they can see force-deactivations of their own resources here.
         const logs = await env.DB.prepare(
-          'SELECT * FROM audit_log WHERE registrar_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
-        ).bind(registrar.id, limit, offset).all();
+          'SELECT * FROM audit_log WHERE registrar_id = ? OR target_registrar_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+        ).bind(registrar.id, registrar.id, limit, offset).all();
         return addCors(jsonResponse(200, { logs: logs.results || [] }));
       }
 
@@ -243,21 +247,39 @@ export default {
         if (!body.reason || typeof body.reason !== 'string' || !body.reason.trim()) {
           return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'reason (non-empty string) is required' } }));
         }
+        // Pre-lookup so we can record target_registrar_id (H7) on the audit
+        // row. If the agent doesn't exist, return 404 before writing audit —
+        // a no-op break-glass on a missing resource is not worth a row.
+        const targetAgentRow = await env.DB.prepare(
+          'SELECT registrar_id FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
+        ).bind(targetAgentId, targetAgentId, targetAgentId).first();
+        if (!targetAgentRow) {
+          return addCors(jsonResponse(404, { error: { code: 'agent_not_found', message: `Agent not found: ${targetAgentId}` } }));
+        }
         // Audit FIRST — abort if it fails.
         try {
           await env.DB.prepare(
-            `INSERT INTO audit_log (action, actor, target, registrar_id, details, ip_address)
-             VALUES (?, ?, ?, ?, ?, ?)`
+            `INSERT INTO audit_log (action, actor, target, registrar_id, target_registrar_id, details, ip_address)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             'force_deactivate_agent',
             registrar.id,
             targetAgentId,
             registrar.id,
+            targetAgentRow.registrar_id,
             JSON.stringify({ reason: body.reason, role: registrar.role }),
             request.headers.get('cf-connecting-ip')
           ).run();
         } catch (err) {
-          console.error('Force-deactivate audit write failed:', err);
+          console.error(JSON.stringify({
+            tag: 'AUDIT_WRITE_FAILED',
+            message: 'force-deactivate audit insert failed; mutation aborted',
+            error: err && err.message ? err.message : String(err),
+            action: 'force_deactivate_agent',
+            actor: registrar.id,
+            target: targetAgentId,
+            target_registrar_id: targetAgentRow.registrar_id,
+          }));
           return addCors(jsonResponse(500, { error: { code: 'audit_write_failed', message: 'Audit record could not be written; mutation aborted' } }));
         }
         const result = await forceDeactivateAgent(targetAgentId, body, env);
@@ -274,20 +296,36 @@ export default {
         if (!body.reason || typeof body.reason !== 'string' || !body.reason.trim()) {
           return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'reason (non-empty string) is required' } }));
         }
+        // Pre-lookup for target_registrar_id (H7). 404 before audit if missing.
+        const targetDelegationRow = await env.DB.prepare(
+          'SELECT registrar_id FROM delegations WHERE id = ?'
+        ).bind(targetDelegationId).first();
+        if (!targetDelegationRow) {
+          return addCors(jsonResponse(404, { error: { code: 'delegation_not_found', message: `Delegation not found: ${targetDelegationId}` } }));
+        }
         try {
           await env.DB.prepare(
-            `INSERT INTO audit_log (action, actor, target, registrar_id, details, ip_address)
-             VALUES (?, ?, ?, ?, ?, ?)`
+            `INSERT INTO audit_log (action, actor, target, registrar_id, target_registrar_id, details, ip_address)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             'force_revoke_delegation',
             registrar.id,
             targetDelegationId,
             registrar.id,
+            targetDelegationRow.registrar_id,
             JSON.stringify({ reason: body.reason, role: registrar.role }),
             request.headers.get('cf-connecting-ip')
           ).run();
         } catch (err) {
-          console.error('Force-revoke audit write failed:', err);
+          console.error(JSON.stringify({
+            tag: 'AUDIT_WRITE_FAILED',
+            message: 'force-revoke audit insert failed; mutation aborted',
+            error: err && err.message ? err.message : String(err),
+            action: 'force_revoke_delegation',
+            actor: registrar.id,
+            target: targetDelegationId,
+            target_registrar_id: targetDelegationRow.registrar_id,
+          }));
           return addCors(jsonResponse(500, { error: { code: 'audit_write_failed', message: 'Audit record could not be written; mutation aborted' } }));
         }
         const result = await forceRevokeDelegation(targetDelegationId, body, env);
@@ -304,6 +342,8 @@ export default {
             actor: registrar.id,
             target: body.operator?.domain || body.operator?.email,
             registrar_id: registrar.id,
+            // BOLA on /register: actor IS the owning registrar.
+            target_registrar_id: registrar.id,
             details: { agent_id: result.body?.did },
             ip_address: request.headers.get('cf-connecting-ip')
           }));
@@ -333,6 +373,9 @@ export default {
             actor: registrar.id,
             target: agentId,
             registrar_id: registrar.id,
+            // BOLA on DELETE /agents: handleDeactivateAgent enforces
+            // self-scope, so actor IS the owning registrar.
+            target_registrar_id: registrar.id,
             details: { reason: body.reason },
             ip_address: request.headers.get('cf-connecting-ip')
           }));
