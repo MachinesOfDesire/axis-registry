@@ -51,3 +51,54 @@ database_id = "CHANGE-ME-d1-database-id"     # CHANGE-ME
 # binding = "EXTENSIONS"
 # database_name = "my-axis-extensions"        # CHANGE-ME (or remove this block)
 # database_id = "CHANGE-ME-extensions-db-id"  # CHANGE-ME
+
+# ============================================================================
+# RATE LIMITING (C3 — 2026-05-11 security review)
+# ============================================================================
+# Cloudflare's built-in Workers Rate Limiting API. Each binding is a separate
+# limiter with its own (limit, period, key-source). The worker code picks
+# which binding to call per request — see `src/middleware/rate-limit.js`.
+#
+# All four bindings are RECOMMENDED for production. If a binding is omitted,
+# `checkRateLimit` no-ops for that tier (so local dev / minimal forks work
+# without these blocks). For production, leave them all configured.
+#
+# Cloudflare's rate-limit periods are fixed to {10, 60} seconds. The numbers
+# below use the 60s window. Tune the `limit` values to your traffic.
+
+# Public reads: /agents/:id, /resolve/:did, /verify/:did, /revocation/:agent_id,
+# /delegations/:id, /delegations/:id/chain. Keyed on cf-connecting-ip.
+# Defaults to 6000 req/min per IP — generous because every AI-comment
+# verification on a host platform translates to one read here. A chatty
+# platform should authenticate as a registrar to escape this bucket.
+[[ratelimits]]
+name = "RL_PUBLIC_READ"
+namespace_id = "1001"
+simple = { limit = 6000, period = 60 }
+
+# Public signature/token verify: GET /verify?token=…, POST /verify/signature.
+# Lower ceiling because Ed25519 verify is the most expensive thing on a
+# public endpoint. 600/min ≈ 10/sec is plenty for the unauthed read case;
+# heavy callers should auth and use the REGISTRAR tier.
+[[ratelimits]]
+name = "RL_PUBLIC_VERIFY_SIG"
+namespace_id = "1002"
+simple = { limit = 600, period = 60 }
+
+# Authenticated mutations: POST /register, POST /delegations, DELETE
+# /agents/*, DELETE /delegations/*, POST /operators/verify-domain*,
+# /admin/*. Keyed on registrar.id. 300/min ≈ 5/sec sustained — easily
+# absorbs a registrar onboarding 100 agents in a minute.
+[[ratelimits]]
+name = "RL_REGISTRAR"
+namespace_id = "1003"
+simple = { limit = 300, period = 60 }
+
+# Brute-force funnel: any mutating request that arrives WITHOUT a valid
+# Bearer. Keyed on cf-connecting-ip. 30/min slows a credential-stuffing
+# attempt to a crawl; legitimate registrars never hit this because their
+# Bearer is valid.
+[[ratelimits]]
+name = "RL_AUTH_FAIL"
+namespace_id = "1004"
+simple = { limit = 30, period = 60 }
