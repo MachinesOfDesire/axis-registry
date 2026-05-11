@@ -6,6 +6,10 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Fixed
+
+- **`migrations/0003_api_key_hash_constraint.sql` replay safety.** The migration as merged contained `BEGIN TRANSACTION` / `COMMIT` (D1 rejects) and a positional `INSERT ... SELECT *` (mismaps because `role` was appended by migration 0001 to position 10 in the live table, not position 7 as in the rebuild target). Live D1 was migrated on 2026-05-11 using a corrected variant; this commit aligns the file in the repo with what actually ran so future replays / forks work.
+
 ### Security
 
 - **H4 — `/admin/agents` static prepared statements + status allowlist.** Previously the handler concatenated an optional `WHERE status = ?` fragment into the query string. The bind was parameterized so this was not SQL injection in practice, but the dynamic-string-build pattern is a footgun and tripped review. Refactored to two static prepared statements (with-status / without-status) selected by branch, and an explicit allowlist (`['active', 'suspended', 'revoked', 'deactivated']`) that returns 400 `invalid_request` for unknown status values instead of silently running a query that matches zero rows.
