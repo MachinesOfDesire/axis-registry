@@ -1,0 +1,37 @@
+-- Migration 0004: add target_registrar_id to audit_log
+-- Per 2026-05-08 security review (H7): GET /audit filters by
+-- `registrar_id = caller.id`. On break-glass /admin/force-* paths,
+-- registrar_id is the super_admin's id, not the owning registrar's.
+-- Owners therefore can't see force-deactivations of their own resources
+-- via their normal /audit endpoint.
+--
+-- Fix: add a parallel `target_registrar_id` column that records the
+-- owning registrar's id (the registrar whose resource is being
+-- mutated). GET /audit widens its filter to
+--   WHERE registrar_id = ? OR target_registrar_id = ?
+-- so the owning registrar sees rows where they are either the actor
+-- or the target.
+--
+-- Existing rows keep target_registrar_id = NULL. Historical force-*
+-- rows therefore remain invisible to the owning registrar's /audit
+-- view — that's a known one-time gap. If a backfill is desired:
+--   UPDATE audit_log
+--     SET target_registrar_id = (
+--       SELECT a.registrar_id FROM agents a WHERE a.id = audit_log.target
+--     )
+--     WHERE action = 'force_deactivate_agent' AND target_registrar_id IS NULL;
+--   UPDATE audit_log
+--     SET target_registrar_id = (
+--       SELECT d.registrar_id FROM delegations d WHERE d.id = audit_log.target
+--     )
+--     WHERE action = 'force_revoke_delegation' AND target_registrar_id IS NULL;
+-- Run those manually if/when desired; not part of this migration to
+-- keep it side-effect-free.
+--
+-- Apply via:
+--   wrangler d1 execute axis-registry-db --remote --file=migrations/0004_audit_target_registrar_id.sql
+--   wrangler d1 execute axis-registry-db --remote --command \
+--     "INSERT INTO d1_migrations (name) VALUES ('0004_audit_target_registrar_id.sql')"
+
+ALTER TABLE audit_log ADD COLUMN target_registrar_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_audit_target_registrar ON audit_log(target_registrar_id);
