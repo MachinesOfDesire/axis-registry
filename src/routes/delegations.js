@@ -10,6 +10,12 @@
 import { findAgent } from './resolve.js';
 import { generateCredentialId } from '../utils/crypto.js';
 
+// M5: cap on how far in the future a delegation's `expires` can sit.
+// Defeats the "100-year delegation" pattern that destroys revocation hygiene.
+// 90 days is the launch default; once tier-aware policy lands, KYB tiers
+// should be allowed a longer ceiling (e.g. 365 days). For now: one number.
+const MAX_DELEGATION_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
+
 export async function handleGetDelegation(delegationId, env) {
   const delegation = await env.DB.prepare(
     'SELECT * FROM delegations WHERE id = ?'
@@ -140,6 +146,29 @@ export async function handleCreateDelegation(body, registrar, env) {
     return {
       status: 400,
       body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires' } }
+    };
+  }
+
+  // M5: enforce max horizon on `expires`. Unbounded `expires` lets callers
+  // mint effectively immortal delegations and defeats revocation hygiene.
+  const expiresMs = Date.parse(expires);
+  if (Number.isNaN(expiresMs)) {
+    return {
+      status: 400,
+      body: { error: { code: 'invalid_request', message: 'expires must be a valid ISO-8601 datetime' } }
+    };
+  }
+  const nowMs = Date.now();
+  if (expiresMs <= nowMs) {
+    return {
+      status: 400,
+      body: { error: { code: 'invalid_request', message: 'expires must be in the future' } }
+    };
+  }
+  if (expiresMs - nowMs > MAX_DELEGATION_HORIZON_MS) {
+    return {
+      status: 400,
+      body: { error: { code: 'expires_too_far', message: `expires cannot be more than ${MAX_DELEGATION_HORIZON_MS / (24 * 60 * 60 * 1000)} days in the future` } }
     };
   }
 
@@ -381,7 +410,33 @@ export async function forceRevokeDelegation(delegationId, body, env) {
   };
 }
 
-async function cascadeRevoke(parentId, timestamp, reason, env) {
+// M3: hard cap on cascade traversal depth to bound worst-case CPU on a
+// malicious or accidentally cyclic delegation graph. 16 levels is well past
+// any realistic delegation chain (in practice chains are 2-4 deep).
+const CASCADE_MAX_DEPTH = 16;
+
+async function cascadeRevoke(parentId, timestamp, reason, env, visited = new Set(), depth = 0) {
+  // M3: bail on depth limit. Anything deeper than CASCADE_MAX_DEPTH levels
+  // gets left active — this is a defensive cap, not a correctness invariant.
+  // If we ever hit this in practice we want to know, so log structured.
+  if (depth >= CASCADE_MAX_DEPTH) {
+    console.warn(JSON.stringify({
+      tag: 'CASCADE_DEPTH_CAP_HIT',
+      message: 'cascadeRevoke stopped at depth cap',
+      parent_id: parentId,
+      depth,
+      max_depth: CASCADE_MAX_DEPTH,
+    }));
+    return 0;
+  }
+
+  // M3: cycle break. The delegations table has a self-referencing FK so
+  // cycles shouldn't be possible via the normal /delegations create path
+  // (which enforces an acyclic parent chain), but the cap defends against
+  // any drift that creates a cycle.
+  if (visited.has(parentId)) return 0;
+  visited.add(parentId);
+
   // Find all active delegations that have this as parent
   const children = await env.DB.prepare(
     `SELECT id FROM delegations WHERE parent_credential_id = ? AND status = 'active'`
@@ -394,8 +449,8 @@ async function cascadeRevoke(parentId, timestamp, reason, env) {
         `UPDATE delegations SET status = 'revoked', revoked_at = ?, revocation_reason = ? WHERE id = ?`
       ).bind(timestamp, `cascade:${reason}`, child.id).run();
       count++;
-      // Recurse
-      count += await cascadeRevoke(child.id, timestamp, reason, env);
+      // Recurse with the shared visited set + incremented depth.
+      count += await cascadeRevoke(child.id, timestamp, reason, env, visited, depth + 1);
     }
   }
   return count;

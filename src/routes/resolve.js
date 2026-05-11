@@ -34,6 +34,14 @@ export async function extractPresentationContext(request, env) {
 
   if (!token) return null;
 
+  // M2: cap raw token size before calling atob. AITs are short Ed25519 JWTs;
+  // 4 KB is a generous ceiling (~3x the largest realistic AIT). Without a cap,
+  // a multi-megabyte Bearer header would blow up atob and burn CPU for a value
+  // that can never validate. Treat oversize as "no valid AIT present" rather
+  // than 400 so the public-layer fallback (no presentation context) still
+  // applies — this function intentionally never rejects the request itself.
+  if (token.length > 4096) return null;
+
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
