@@ -12,6 +12,7 @@
  */
 
 import { base64urlToBytes, bytesToBase58, verifyEd25519Signature } from '../utils/crypto.js';
+import { parseAxisDid, buildAxisDidV2 } from '../utils/did.js';
 
 /**
  * Verify an AIT from the request and return the presenting agent's info.
@@ -128,19 +129,57 @@ export async function handleResolve(did, env) {
 // ---- Helpers ----
 
 export async function findAgent(identifier, env) {
-  // Try all identifier formats
+  // Phase 1: direct match against the stored axis_id / did / id columns.
+  // Covers the common case where the caller passes the exact form the
+  // agent was registered with.
   let agent = await env.DB.prepare(
     'SELECT * FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
   ).bind(identifier, identifier, identifier).first();
+  if (agent) return agent;
 
-  // Also try matching just the agent name part
-  if (!agent && !identifier.includes(':')) {
+  // Phase 2 (C1 / spec v0.2 §10.3): cross-form DID tolerance. Per spec,
+  // resolvers MUST accept both v0.1 and v0.2 DID forms regardless of
+  // which form the agent was registered with. Parse the input and try
+  // the alternate form(s).
+  const parsed = parseAxisDid(identifier);
+  if (parsed) {
+    if (parsed.form === 'v0.1') {
+      // Caller sent did:axis:prime:<agent>. The agent might actually be
+      // stored with a v0.2 DID. We don't know the operator slug from this
+      // input, so fall back to matching by agent slug alone.
+      agent = await env.DB.prepare(
+        'SELECT * FROM agents WHERE id = ?'
+      ).bind(parsed.agent).first();
+      if (agent) return agent;
+    } else if (parsed.form === 'v0.2') {
+      // Caller sent did:axis:prime:<operator>:<agent>. The agent might
+      // be stored with a v0.1 DID. Try the bare agent slug, scoped to
+      // the operator namespace to avoid cross-operator collisions.
+      agent = await env.DB.prepare(
+        'SELECT * FROM agents WHERE id = ? AND operator_id = ?'
+      ).bind(parsed.agent, parsed.operator).first();
+      if (agent) return agent;
+      // Final fallback: bare agent slug, no operator scope. Picks the
+      // first match if multiple operators share an agent slug. Matches
+      // the v0.1 single-namespace behavior; will be eliminated when
+      // Phase 2 migration brings every stored DID to v0.2.
+      agent = await env.DB.prepare(
+        'SELECT * FROM agents WHERE id = ?'
+      ).bind(parsed.agent).first();
+      if (agent) return agent;
+    }
+  }
+
+  // Bare agent slug (no colons) — keep the v0.1 lookup path for non-DID
+  // identifiers (e.g. axis_id queries that happen to omit the prefix).
+  if (!identifier.includes(':')) {
     agent = await env.DB.prepare(
       'SELECT * FROM agents WHERE id = ?'
     ).bind(identifier).first();
+    if (agent) return agent;
   }
 
-  return agent;
+  return null;
 }
 
 function buildAgentRecord(agent, operator, includePresentation, env) {

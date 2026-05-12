@@ -8,6 +8,20 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ### Security
 
+- **C1 phase 1 — operator-namespaced DIDs (spec v0.2 §10.3).** Closes the DID name-squatting finding by structurally requiring verification of an operator namespace before claiming any agent slug inside it. Implementation is additive only — no migration in this phase.
+  - **`src/utils/operator-slug.js`** — tier-driven operator-slug derivation (`domain` → verified domain root with TLD stripped; `email` / `kyb_individual` → opaque `op-<24hex>`; `kyb_organization` → domain if present else opaque). Slug is derived from verification proof, never caller-chosen — that's what kills squatting at the protocol level.
+  - **`src/utils/did.js`** — `parseAxisDid` accepts both v0.1 (`did:axis:prime:<agent>`) and v0.2 (`did:axis:prime:<operator>:<agent>`) canonical forms; `buildAxisDidV2` emits the v0.2 form.
+  - **`src/routes/register.js`** — newly-registered agents get the v0.2 DID form via `buildAxisDidV2`.
+  - **`src/routes/operators.js`** — newly-created operators get the v0.2 slug via `deriveOperatorSlug`. Previously domain-tier operators got `<domain>.replace(/\./g, '-')` (e.g. `kipple-labs-com`); they now get `<domain-root>` (e.g. `kipple-labs`). Existing operator records keep their old-form id until the Phase 2 migration.
+  - **`src/routes/resolve.js findAgent`** — cross-form DID tolerance per spec §10.3 ("Resolvers MUST accept both v0.1 and v0.2 DID forms"). Caller can pass either form; the resolver tries the literal stored DID first, then falls back to parsing the input and matching by agent slug (operator-scoped where possible).
+  - **`test/c1.test.js`** — 17 unit tests covering slug derivation, opacity invariants for the floor tier, DID parsing, and v0.1 / v0.2 round-trips. 36/36 tests pass.
+  - **Phase 2 (separate PR):** re-issue DIDs and operator slugs for the existing ~25 production agents at cutover. No legacy-alias period per the 2026-05-11 locked decision (almost entirely Josh's test data).
+  - **PSL gap:** multi-label TLDs (`example.co.uk`) currently collapse via dot→dash (`example-co`) rather than PSL-aware stripping (`example`). Tracked as a follow-up; not blocking ccTLD launch but should land before scale.
+
+
+
+### Security
+
 - **C3 — application-level rate limiting via Cloudflare Workers Rate Limiting bindings.** Four tiers (`RL_PUBLIC_READ`, `RL_PUBLIC_VERIFY_SIG`, `RL_REGISTRAR`, `RL_AUTH_FAIL`) with sensible defaults sized to absorb the chatty-platform AI-comment-verification flow without throttling legitimate traffic. Auth-fail tier (30 req/min per IP on mutating requests with no/invalid Bearer) is the credential-stuffing brake. Each tier hit emits a structured `RATE_LIMIT_HIT` log line (key prefix, tier, URL, method, `cf-ray`) for Logpush filtering. If a binding is unset (local dev / minimal fork) the helper is a no-op, so test environments are unaffected. 429 responses include `Retry-After: 60`. Tier values + Logpush + WAF dashboard handoff documented in `DEPLOYMENT.md`. No wire-protocol change.
 
 
