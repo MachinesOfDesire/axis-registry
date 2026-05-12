@@ -191,7 +191,15 @@ function buildAgentRecord(agent, operator, includePresentation, env) {
     axis_version: '0.1',
     agent_id: agent.axis_id,
     did: agent.did,
-    operator_id: agent.operator_id,
+    // operator_id is returned in canonical `axis:<slug>:operator` form,
+    // matching what `/verify` already emits. Previously this returned the
+    // bare DB-column slug (`<slug>`), which drifted from `/verify` and
+    // caused the axis-comments worker's defense-in-depth check (operator_id
+    // must agree across /agents/:id and /verify for the same agent) to
+    // reject otherwise-valid AITs. The DB column itself stays as the bare
+    // slug — normalization happens at the response boundary.
+    // Coord 818d; AXIS Protocol v0.1.1 §4.1.
+    operator_id: `axis:${agent.operator_id}:operator`,
     public_key: agent.public_key,
     key_algorithm: agent.key_algorithm,
     status: agent.status,

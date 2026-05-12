@@ -6,6 +6,18 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Fixed
+
+- **`operator_id` canonical form on `/agents/:id` and `/agents?operator_id=`** (Coord 818d; surfaced by SDK 0.2.2 e2e test against live axis-comments). Both endpoints previously returned `operator_id` as the bare DB-column slug (e.g. `offworldnews-ai`), while `/verify` returns it canonical (`axis:offworldnews-ai:operator`). The axis-comments worker enforces cross-endpoint consistency as defense-in-depth (worker-comments.js:153-161 — intentional, not a worker bug) and was rejecting AITs on the drift, blocking SDK 0.2.2 ship. Both endpoints now normalize at the response-formatting boundary; DB column `agents.operator_id` is unchanged. `test/operator-id-format.test.js` adds 4 regression tests locking in the format invariant.
+  - Migration note for consumers parsing `/agents/:id` `operator_id`: it is now `axis:<slug>:operator` instead of `<slug>`. Strip the `axis:` prefix and `:operator` suffix to recover the bare slug.
+  - Internal helpers (`resolve.js:73`, `axisMetadata.operator.id` inside the DID document) intentionally keep the bare slug — only client-facing top-level `operator_id` fields are normalized.
+
+## [0.1.3] — pending
+
+The above Fixed entry rolls into v0.1.3 once this PR ships. Earlier security batch items (C1 phase 1, C3, H3–H7, M1–M3, M5–M7) deployed under [Unreleased] since 2026-05-11 are also part of this release; tag at deploy time.
+
+## [Unreleased — pre-0.1.3 batch]
+
 ### Security
 
 - **C1 phase 1 — operator-namespaced DIDs (spec v0.2 §10.3).** Closes the DID name-squatting finding by structurally requiring verification of an operator namespace before claiming any agent slug inside it. Implementation is additive only — no migration in this phase.

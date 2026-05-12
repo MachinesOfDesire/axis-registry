@@ -101,7 +101,15 @@ export default {
         const agents = await env.DB.prepare(
           'SELECT * FROM agents WHERE operator_id = ? ORDER BY created_at DESC'
         ).bind(operatorId).all();
-        return addCors(jsonResponse(200, { agents: agents.results || [] }));
+        // Normalize operator_id to canonical `axis:<slug>:operator` form on
+        // every row before returning, matching /verify and /agents/:id (post
+        // Coord 818d). The DB column stays as the bare slug; normalization
+        // happens at the response-formatting boundary only.
+        const normalizedAgents = (agents.results || []).map((agent) => ({
+          ...agent,
+          operator_id: `axis:${agent.operator_id}:operator`,
+        }));
+        return addCors(jsonResponse(200, { agents: normalizedAgents }));
       }
 
       // GET /operators — List operators owned by the calling registrar.
