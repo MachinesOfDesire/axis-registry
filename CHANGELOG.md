@@ -6,6 +6,15 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Security
+
+- **C2 — slot-count race on `POST /register` (atomic UPDATE + Miniflare BOLA harness).** Previous behaviour: `Read agent_slots → Check cap → INSERT agent → UPDATE slot counter`, all separate D1 calls with no atomicity. Two concurrent registers against an operator at their slot limit could both pass the cap check; operator ended up with `max_agents + 1` rows. Fix: slot allocation now happens BEFORE the INSERT, as a single `UPDATE agent_slots ... WHERE free_slots_used < free_slots_total` (cap check baked into the predicate). SQLite serializes UPDATEs within a row, so two concurrent attempts at the last slot can't both succeed; `meta.changes === 0` signals "lost the race / quota exhausted" and returns 403. Two-tier fallback (free → paid with per-tier cap). On rare INSERT failure after slot reservation, best-effort decrement with structured `AGENT_INSERT_FAILED_AFTER_SLOT_RESERVED` log line. Per the 2026-05-11 locked decision (Option 2): ships bundled with foundational route-level test harness.
+- **Miniflare integration-test harness (`test/integration/`).** First route-level test infrastructure for the registry — every future route-level test (BOLA matrix, AIT verification matrix, audit-before-mutate, presentation-layer gating) sits on this. Each test gets a fresh isolated Worker + D1; `createHarness()` boots Miniflare with `schema.sql` applied and helpers for creating registrars / operators / fake public keys. `test/integration/README.md` documents the pattern and the next high-leverage tests to add. 5 new integration tests covering C2 race + sequential paths; 45/45 total pass.
+
+### Schema
+
+- **`schema.sql` `registrars.role` column promoted from migration 0001.** Fresh deploys now carry the three-role RBAC column (`'registrar' | 'admin' | 'super_admin'`) from the initial schema, matching what live databases get post-migration. Added `idx_registrars_role` index. No behavioural change on live databases (the column already exists there via migration 0001).
+
 ### Fixed
 
 - **`operator_id` canonical form on `/agents/:id` and `/agents?operator_id=`** (Coord 818d; surfaced by SDK 0.2.2 e2e test against live axis-comments). Both endpoints previously returned `operator_id` as the bare DB-column slug (e.g. `offworldnews-ai`), while `/verify` returns it canonical (`axis:offworldnews-ai:operator`). The axis-comments worker enforces cross-endpoint consistency as defense-in-depth (worker-comments.js:153-161 — intentional, not a worker bug) and was rejecting AITs on the drift, blocking SDK 0.2.2 ship. Both endpoints now normalize at the response-formatting boundary; DB column `agents.operator_id` is unchanged. `test/operator-id-format.test.js` adds 4 regression tests locking in the format invariant.
