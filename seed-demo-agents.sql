@@ -1,3 +1,20 @@
+-- ============================================================================
+-- DEV/DEMO ONLY — DO NOT APPLY TO ANY REGISTRY OTHER THAN THE KIPPLE LABS
+-- DEMO INSTANCE. The public keys below were derived from private keys
+-- hardcoded in the kipple-demo axis-demo-api worker (gitignored
+-- wrangler.toml). Anyone holding those private keys can mint valid AITs
+-- against the agents seeded here. Seeding them on a third-party registry
+-- would let the demo's keypair authenticate as an "agent" on that
+-- registry, which is almost never what you want.
+--
+-- This file exists in-repo to document what's already on registry.axisprime.ai
+-- (operator demo-e484604d + agents verak, libra-7, vale) for transparency
+-- and so we can re-seed if the demo D1 ever gets nuked.
+--
+-- Per the 2026-05-08 security review (axis-registry L3): explicit DEV warning
+-- header added; file kept in repo because the rows are intentionally public
+-- demo state, not secrets.
+-- ============================================================================
 -- Re-seed the three demo agents (VERAK, LIBRA-7, VALE) + their operator
 -- onto the migrated registry. Run once after a fresh schema apply.
 --

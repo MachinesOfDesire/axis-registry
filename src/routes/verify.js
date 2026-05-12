@@ -15,7 +15,7 @@ export async function handleVerifyIdentity(identifier, env) {
   if (!agent) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `Agent not found: ${identifier}` } }
+      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
     };
   }
 
@@ -83,7 +83,7 @@ export async function handleVerifyAIT(token, env) {
     if (!agent) {
       return {
         status: 404,
-        body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentId}` } }
+        body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
       };
     }
 
@@ -153,7 +153,7 @@ export async function handleVerifyAIT(token, env) {
   } catch (err) {
     return {
       status: 400,
-      body: { error: { code: 'invalid_request', message: 'Failed to decode token: ' + err.message } }
+      body: { error: { code: 'invalid_request', message: 'Failed to decode token' } }
     };
   }
 }
@@ -172,7 +172,7 @@ export async function handleVerifySignature(body, env) {
   if (!agent) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `Agent not found: ${did}` } }
+      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
     };
   }
 

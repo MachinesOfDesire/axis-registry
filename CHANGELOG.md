@@ -8,38 +8,8 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ### Security
 
-- **C2 — slot-count race on `POST /register` (atomic UPDATE + Miniflare BOLA harness).** Previous behaviour: `Read agent_slots → Check cap → INSERT agent → UPDATE slot counter`, all separate D1 calls with no atomicity. Two concurrent registers against an operator at their slot limit could both pass the cap check; operator ended up with `max_agents + 1` rows. Fix: slot allocation now happens BEFORE the INSERT, as a single `UPDATE agent_slots ... WHERE free_slots_used < free_slots_total` (cap check baked into the predicate). SQLite serializes UPDATEs within a row, so two concurrent attempts at the last slot can't both succeed; `meta.changes === 0` signals "lost the race / quota exhausted" and returns 403. Two-tier fallback (free → paid with per-tier cap). On rare INSERT failure after slot reservation, best-effort decrement with structured `AGENT_INSERT_FAILED_AFTER_SLOT_RESERVED` log line. Per the 2026-05-11 locked decision (Option 2): ships bundled with foundational route-level test harness.
-- **Miniflare integration-test harness (`test/integration/`).** First route-level test infrastructure for the registry — every future route-level test (BOLA matrix, AIT verification matrix, audit-before-mutate, presentation-layer gating) sits on this. Each test gets a fresh isolated Worker + D1; `createHarness()` boots Miniflare with `schema.sql` applied and helpers for creating registrars / operators / fake public keys. `test/integration/README.md` documents the pattern and the next high-leverage tests to add. 5 new integration tests covering C2 race + sequential paths; 45/45 total pass.
-
-### Schema
-
-- **`schema.sql` `registrars.role` column promoted from migration 0001.** Fresh deploys now carry the three-role RBAC column (`'registrar' | 'admin' | 'super_admin'`) from the initial schema, matching what live databases get post-migration. Added `idx_registrars_role` index. No behavioural change on live databases (the column already exists there via migration 0001).
-
-### Fixed
-
-- **`operator_id` canonical form on `/agents/:id` and `/agents?operator_id=`** (Coord 818d; surfaced by SDK 0.2.2 e2e test against live axis-comments). Both endpoints previously returned `operator_id` as the bare DB-column slug (e.g. `offworldnews-ai`), while `/verify` returns it canonical (`axis:offworldnews-ai:operator`). The axis-comments worker enforces cross-endpoint consistency as defense-in-depth (worker-comments.js:153-161 — intentional, not a worker bug) and was rejecting AITs on the drift, blocking SDK 0.2.2 ship. Both endpoints now normalize at the response-formatting boundary; DB column `agents.operator_id` is unchanged. `test/operator-id-format.test.js` adds 4 regression tests locking in the format invariant.
-  - Migration note for consumers parsing `/agents/:id` `operator_id`: it is now `axis:<slug>:operator` instead of `<slug>`. Strip the `axis:` prefix and `:operator` suffix to recover the bare slug.
-  - Internal helpers (`resolve.js:73`, `axisMetadata.operator.id` inside the DID document) intentionally keep the bare slug — only client-facing top-level `operator_id` fields are normalized.
-
-## [0.1.3] — pending
-
-The above Fixed entry rolls into v0.1.3 once this PR ships. Earlier security batch items (C1 phase 1, C3, H3–H7, M1–M3, M5–M7) deployed under [Unreleased] since 2026-05-11 are also part of this release; tag at deploy time.
-
-## [Unreleased — pre-0.1.3 batch]
-
-### Security
-
-- **C1 phase 2 — migrate existing agent DIDs to v0.2 form.** `migrations/0005_c1_v0_2_did_cutover.sql` re-issues `did` for every agent row that still carries the 3-colon v0.1 shape (`did:axis:prime:<agent>`) into the 4-colon v0.2 shape (`did:axis:prime:<operator>:<agent>`). 25 production rows at cutover, all v0.1. Operator IDs are left alone — they were already derived from verification proof at create time, just transformed differently than the v0.2 helper would emit for new operators. Per the 2026-05-11 locked decision, no legacy-alias period (almost entirely Josh's test data). Rollback recipe documented inline. Live migration applied 2026-05-12.
-
-
-
-### Security
-
-- **H1 — `aud` (audience) claim now REQUIRED on AITs.** Per spec intent, an AIT proves "the agent chose to interact with *this* platform" — without `aud`, a single leaked AIT becomes a universal presentation-layer key until expiry. Two paths updated:
-  - `routes/verify.js handleVerifyAIT` — rejects AITs with missing/empty `aud` (returns 400 `missing_aud`).
-  - `routes/resolve.js extractPresentationContext` — silent fallback to public-layer when `aud` is missing/empty, matching the existing failure mode for invalid AITs (the function is documented as "never rejects the request itself").
-  - Sub-decision per the 2026-05-11 lock: v0.1.3 accepts any non-empty string (platforms self-identify). Registry-managed platform allowlists deferred to v0.2.
-  - **Breaking surface**: AITs minted without `aud` now fail. SDK 0.2.2 ships sign-side enforcement; existing prod comment rows are stored records, not live AITs. Real breakage = Josh's test scripts + any third-party prototype not yet coordinated with.
+- **L3 — `seed-key.sql` no longer committed; `.example` placeholder shipped instead.** The live production registrar API key hash was previously committed in the public repo. SHA-256 is one-way, but publishing the live hash removed a layer of obscurity (offline brute-force on the plaintext, algorithm confirmation) for zero operational benefit. `seed-key.sql` is now gitignored alongside `wrangler.toml`; `seed-key.sql.example` documents the workflow (generate Bearer client-side, compute SHA-256, paste, apply, delete local copy). `seed-demo-agents.sql` gets a prominent DEV-ONLY warning header — the rows it seeds are intentional public demo state on `registry.axisprime.ai`, not a leak, but a third-party deployer running this file would inherit the demo's keypair-authentication path. The H3 schema CHECK constraint (PR #2) already prevents an empty seed row from drifting back in.
+- **L4 — error messages no longer echo caller-supplied identifiers.** `404` / `400` / `409` responses that previously interpolated the requested `agent_id` / `delegation_id` / `operator_id` / DID into the message body now return fixed strings (`"Agent not found"`, `"Delegation not found"`, etc.). Mild enumeration-aid before — the same 404 vs 200 distinction reveals existence, but the echoed identifier confirms the exact form the caller used reached the lookup. Error codes (semantic routing for clients) are unchanged; only the human-readable `message` field was scrubbed. Also scrubbed: `err.message` leak in `register.js` (`"Failed to process public key: ${err.message}"` → `"Failed to process public key"`) and `verify.js` (`"Failed to decode token: ${err.message}"` → `"Failed to decode token"`). The full error remains in server-side `console.error` for forensics.
 - **C1 phase 1 — operator-namespaced DIDs (spec v0.2 §10.3).** Closes the DID name-squatting finding by structurally requiring verification of an operator namespace before claiming any agent slug inside it. Implementation is additive only — no migration in this phase.
   - **`src/utils/operator-slug.js`** — tier-driven operator-slug derivation (`domain` → verified domain root with TLD stripped; `email` / `kyb_individual` → opaque `op-<24hex>`; `kyb_organization` → domain if present else opaque). Slug is derived from verification proof, never caller-chosen — that's what kills squatting at the protocol level.
   - **`src/utils/did.js`** — `parseAxisDid` accepts both v0.1 (`did:axis:prime:<agent>`) and v0.2 (`did:axis:prime:<operator>:<agent>`) canonical forms; `buildAxisDidV2` emits the v0.2 form.

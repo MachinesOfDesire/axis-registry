@@ -86,7 +86,7 @@ export async function extractPresentationContext(request, env) {
 export async function handleGetAgent(agentId, env, request, registrar = null) {
   const agent = await findAgent(agentId, env);
   if (!agent) {
-    return { status: 404, body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentId}` } } };
+    return { status: 404, body: { error: { code: 'agent_not_found', message: 'Agent not found' } } };
   }
 
   // Presentation layer is unlocked by ANY of:
@@ -108,7 +108,7 @@ export async function handleGetAgent(agentId, env, request, registrar = null) {
 export async function handleResolve(did, env) {
   const agent = await findAgent(did, env);
   if (!agent) {
-    return { status: 404, body: { error: { code: 'agent_not_found', message: `DID not found: ${did}` } } };
+    return { status: 404, body: { error: { code: 'agent_not_found', message: 'DID not found' } } };
   }
 
   const startTime = Date.now();
