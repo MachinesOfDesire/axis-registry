@@ -24,7 +24,7 @@ export async function handleGetDelegation(delegationId, env) {
   if (!delegation) {
     return {
       status: 404,
-      body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+      body: { error: { code: 'delegation_not_found', message: 'Delegation not found' } }
     };
   }
 
@@ -40,7 +40,7 @@ export async function handleVerifyChain(agentIdentifier, env) {
   if (!agent) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentIdentifier}` } }
+      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
     };
   }
 
@@ -200,7 +200,7 @@ export async function handleCreateDelegation(body, registrar, env) {
   if (issuerRegistrarId === null) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `issued_by not found as agent or operator: ${issued_by}` } }
+      body: { error: { code: 'agent_not_found', message: 'issued_by not found as agent or operator' } }
     };
   }
   if (issuerRegistrarId !== registrar.id) {
@@ -241,7 +241,7 @@ export async function handleCreateDelegation(body, registrar, env) {
     if (!parent) {
       return {
         status: 400,
-        body: { error: { code: 'delegation_not_found', message: `Parent credential not found or not active: ${parent_credential_id}` } }
+        body: { error: { code: 'delegation_not_found', message: 'Parent credential not found or not active' } }
       };
     }
 
@@ -322,7 +322,7 @@ export async function handleRevokeDelegation(delegationId, body, registrar, env)
   if (!delegation) {
     return {
       status: 404,
-      body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+      body: { error: { code: 'delegation_not_found', message: 'Delegation not found' } }
     };
   }
 
@@ -377,7 +377,7 @@ export async function forceRevokeDelegation(delegationId, body, env) {
   if (!delegation) {
     return {
       status: 404,
-      body: { error: { code: 'delegation_not_found', message: `Delegation not found: ${delegationId}` } }
+      body: { error: { code: 'delegation_not_found', message: 'Delegation not found' } }
     };
   }
 

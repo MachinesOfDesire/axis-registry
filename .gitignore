@@ -6,6 +6,11 @@
 # their own values. The real file is intentionally not committed.
 wrangler.toml
 
+# Real registrar key seed. Each deployer copies seed-key.sql.example ->
+# seed-key.sql and fills in the SHA-256 of their bootstrap Bearer token.
+# Publishing the live hash removes a layer of obscurity (per L3 review item).
+seed-key.sql
+
 # Node
 node_modules/
 npm-debug.log*

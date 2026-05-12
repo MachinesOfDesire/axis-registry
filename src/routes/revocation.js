@@ -12,7 +12,7 @@ export async function handleRevocation(agentId, env) {
   if (!agent) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentId}` } }
+      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
     };
   }
 
@@ -37,7 +37,7 @@ export async function handleDeactivateAgent(agentId, body, registrar, env) {
   if (!agent) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentId}` } }
+      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
     };
   }
 
@@ -101,7 +101,7 @@ export async function forceDeactivateAgent(agentId, body, env) {
   if (!agent) {
     return {
       status: 404,
-      body: { error: { code: 'agent_not_found', message: `Agent not found: ${agentId}` } }
+      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
     };
   }
 

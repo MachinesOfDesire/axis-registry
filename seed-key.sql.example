@@ -1,0 +1,24 @@
+-- ============================================================================
+-- DEV/SETUP ONLY — do not commit a filled-in copy of this file.
+-- ============================================================================
+-- Initial registrar API key hash. Used once per deploy, when bootstrapping
+-- a fresh registrar row that the canonical schema seeds with api_key_hash = ''.
+--
+-- Workflow:
+--   1. Generate a strong random Bearer token client-side (e.g. `openssl rand -hex 32`).
+--   2. Compute its SHA-256 (e.g. `echo -n "$TOKEN" | sha256sum`).
+--   3. Copy this file to a gitignored `seed-key.sql` and paste the hash.
+--   4. Apply: `wrangler d1 execute <db> --remote --file=seed-key.sql`.
+--   5. Store the plaintext in a password manager. The registry never sees it.
+--   6. Delete the local `seed-key.sql`.
+--
+-- Per the 2026-05-08 security review (axis-registry L3): the live hash is
+-- never committed to the public repo. Publishing it removed a layer of
+-- obscurity (offline brute-force on the plaintext, confirmation of the
+-- SHA-256 algorithm) without operational benefit. After H3 (PR #2), the
+-- schema CHECK constraint also enforces a 64-char hash on insert, so an
+-- empty seed row cannot drift back in.
+
+UPDATE registrars
+   SET api_key_hash = 'CHANGE-ME-sha256-hex-of-your-bearer-token'
+ WHERE id = 'kipple-labs';

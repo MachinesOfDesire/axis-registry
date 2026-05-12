@@ -93,7 +93,7 @@ export default {
           'SELECT id, registrar_id FROM operators WHERE id = ?'
         ).bind(operatorId).first();
         if (!operator) {
-          return addCors(jsonResponse(404, { error: { code: 'not_found', message: `Operator not found: ${operatorId}` } }));
+          return addCors(jsonResponse(404, { error: { code: 'not_found', message: 'Operator not found' } }));
         }
         if (operator.registrar_id !== registrar.id && !isAdmin(registrar)) {
           return addCors(jsonResponse(403, { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } }));
@@ -285,7 +285,7 @@ export default {
           'SELECT registrar_id FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
         ).bind(targetAgentId, targetAgentId, targetAgentId).first();
         if (!targetAgentRow) {
-          return addCors(jsonResponse(404, { error: { code: 'agent_not_found', message: `Agent not found: ${targetAgentId}` } }));
+          return addCors(jsonResponse(404, { error: { code: 'agent_not_found', message: 'Agent not found' } }));
         }
         // Audit FIRST — abort if it fails.
         try {
@@ -332,7 +332,7 @@ export default {
           'SELECT registrar_id FROM delegations WHERE id = ?'
         ).bind(targetDelegationId).first();
         if (!targetDelegationRow) {
-          return addCors(jsonResponse(404, { error: { code: 'delegation_not_found', message: `Delegation not found: ${targetDelegationId}` } }));
+          return addCors(jsonResponse(404, { error: { code: 'delegation_not_found', message: 'Delegation not found' } }));
         }
         try {
           await env.DB.prepare(
@@ -459,7 +459,7 @@ export default {
           'SELECT * FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
         ).bind(agentIdentifier, agentIdentifier, agentIdentifier).first();
         if (!agent) {
-          return addCors(jsonResponse(404, { error: { code: 'agent_not_found', message: `Agent not found: ${agentIdentifier}` } }));
+          return addCors(jsonResponse(404, { error: { code: 'agent_not_found', message: 'Agent not found' } }));
         }
         const operator = await env.DB.prepare(
           'SELECT verification_tier, domain FROM operators WHERE id = ?'
@@ -561,7 +561,7 @@ export default {
 
       // 404
       return addCors(jsonResponse(404, {
-        error: { code: 'not_found', message: `No route for ${method} ${path}` }
+        error: { code: 'not_found', message: 'No route matches this request' }
       }));
 
     } catch (err) {

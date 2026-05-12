@@ -135,7 +135,7 @@ export async function handleRegister(body, registrar, env) {
     agentIdHash = await deriveAgentId(body.publicKey);
   } catch (err) {
     console.error('deriveAgentId error:', err);
-    return { status: 400, body: { error: { code: 'invalid_key', message: `Failed to process public key: ${err.message}` } } };
+    return { status: 400, body: { error: { code: 'invalid_key', message: 'Failed to process public key' } } };
   }
   const agentName = body.metadata?.name || agentIdHash;
   const agentId = agentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
@@ -154,7 +154,7 @@ export async function handleRegister(body, registrar, env) {
   if (existing) {
     return {
       status: 409,
-      body: { error: { code: 'agent_already_exists', message: `Agent ID collision: ${axisId}` } }
+      body: { error: { code: 'agent_already_exists', message: 'Agent ID collision' } }
     };
   }
 
