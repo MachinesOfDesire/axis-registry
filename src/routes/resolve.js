@@ -52,6 +52,13 @@ export async function extractPresentationContext(request, env) {
 
     if (header.typ !== 'AIT' || header.alg !== 'EdDSA') return null;
 
+    // H1: require non-empty `aud`. Silent here — presentation-layer unlock
+    // fails closed, caller falls back to the public layer. The matching
+    // loud-reject path lives in routes/verify.js handleVerifyAIT.
+    if (!payload.aud || typeof payload.aud !== 'string' || payload.aud.trim() === '') {
+      return null;
+    }
+
     // Find the presenting agent
     const agentId = payload.iss || payload.sub;
     const agent = await findAgent(agentId, env);
