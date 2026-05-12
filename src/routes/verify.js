@@ -63,6 +63,20 @@ export async function handleVerifyAIT(token, env) {
       };
     }
 
+    // H1 (2026-05-11 locked decision): require non-empty `aud` claim.
+    // Per spec intent, an AIT proves "the agent chose to interact with
+    // this platform" — without aud, a single leaked AIT becomes a
+    // universal presentation-layer key until expiry. The registry now
+    // refuses to validate AITs that omit aud. For v0.1.3 we accept any
+    // non-empty string (platforms self-identify); registry-managed
+    // platform allowlists are deferred to v0.2.
+    if (!payload.aud || typeof payload.aud !== 'string' || payload.aud.trim() === '') {
+      return {
+        status: 400,
+        body: { error: { code: 'missing_aud', message: 'AIT payload must include a non-empty `aud` (audience) claim' } }
+      };
+    }
+
     // Find the agent
     const agentId = payload.iss || payload.sub;
     const agent = await findAgent(agentId, env);

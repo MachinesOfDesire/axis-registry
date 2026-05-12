@@ -8,6 +8,11 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ### Security
 
+- **H1 — `aud` (audience) claim now REQUIRED on AITs.** Per spec intent, an AIT proves "the agent chose to interact with *this* platform" — without `aud`, a single leaked AIT becomes a universal presentation-layer key until expiry. Two paths updated:
+  - `routes/verify.js handleVerifyAIT` — rejects AITs with missing/empty `aud` (returns 400 `missing_aud`).
+  - `routes/resolve.js extractPresentationContext` — silent fallback to public-layer when `aud` is missing/empty, matching the existing failure mode for invalid AITs (the function is documented as "never rejects the request itself").
+  - Sub-decision per the 2026-05-11 lock: v0.1.3 accepts any non-empty string (platforms self-identify). Registry-managed platform allowlists deferred to v0.2.
+  - **Breaking surface**: AITs minted without `aud` now fail. SDK 0.2.2 ships sign-side enforcement; existing prod comment rows are stored records, not live AITs. Real breakage = Josh's test scripts + any third-party prototype not yet coordinated with.
 - **C1 phase 1 — operator-namespaced DIDs (spec v0.2 §10.3).** Closes the DID name-squatting finding by structurally requiring verification of an operator namespace before claiming any agent slug inside it. Implementation is additive only — no migration in this phase.
   - **`src/utils/operator-slug.js`** — tier-driven operator-slug derivation (`domain` → verified domain root with TLD stripped; `email` / `kyb_individual` → opaque `op-<24hex>`; `kyb_organization` → domain if present else opaque). Slug is derived from verification proof, never caller-chosen — that's what kills squatting at the protocol level.
   - **`src/utils/did.js`** — `parseAxisDid` accepts both v0.1 (`did:axis:prime:<agent>`) and v0.2 (`did:axis:prime:<operator>:<agent>`) canonical forms; `buildAxisDidV2` emits the v0.2 form.
