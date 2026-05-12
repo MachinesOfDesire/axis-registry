@@ -33,10 +33,20 @@ CREATE TABLE IF NOT EXISTS registrars (
                                                 -- inherit this via migration 0003.
   domain TEXT,                                  -- registrar's domain
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'revoked')),
+  role TEXT NOT NULL DEFAULT 'registrar'        -- 'registrar' | 'admin' | 'super_admin'
+    CHECK(role IN ('registrar', 'admin', 'super_admin')),
+                                                -- Added via migration 0001 on live
+                                                -- databases; included here so fresh
+                                                -- deploys carry it from the start.
+                                                -- Three-role RBAC: registrar (default,
+                                                -- self-scoped), admin (cross-tenant read),
+                                                -- super_admin (admin + break-glass).
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   metadata TEXT                                 -- JSON blob for extra info
 );
+
+CREATE INDEX IF NOT EXISTS idx_registrars_role ON registrars(role);
 
 -- ============================================
 -- OPERATORS

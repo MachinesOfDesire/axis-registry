@@ -7,8 +7,13 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test \"test/*.test.js\" \"test/integration/*.test.js\"",
+    "test:unit": "node --test \"test/*.test.js\"",
+    "test:integration": "node --test \"test/integration/*.test.js\"",
     "db:init": "wrangler d1 execute axis-registry-db --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute axis-registry-db --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "miniflare": "^4.20260507.1"
   }
 }
