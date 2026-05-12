@@ -6,6 +6,7 @@
  */
 
 import { deriveAgentId, verifyEd25519Signature, generateToken, base64urlToBytes, bytesToBase58 } from '../utils/crypto.js';
+import { buildAxisDidV2 } from '../utils/did.js';
 
 export async function handleRegister(body, registrar, env) {
   // Validate required fields
@@ -102,7 +103,11 @@ export async function handleRegister(body, registrar, env) {
   const agentName = body.metadata?.name || agentIdHash;
   const agentId = agentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const axisId = `axis:${operator.id}:${agentId}`;
-  const did = `did:axis:prime:${agentId}`;
+  // C1 (spec v0.2 §10.3): v0.2 canonical DID is operator-namespaced.
+  // v0.1 form `did:axis:prime:<agent>` remains resolvable for legacy rows
+  // (findAgent accepts both via src/utils/did.js parseAxisDid), but every
+  // newly-registered agent gets the v0.2 form.
+  const did = buildAxisDidV2('prime', operator.id, agentId);
 
   // Check for collisions
   const existing = await env.DB.prepare(

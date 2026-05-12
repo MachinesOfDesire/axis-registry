@@ -7,6 +7,7 @@
  */
 
 import { generateToken } from '../utils/crypto.js';
+import { deriveOperatorSlug } from '../utils/operator-slug.js';
 
 export async function handleVerifyDomain(body, registrar, env) {
   const { domain, method, email } = body;
@@ -28,14 +29,18 @@ export async function handleVerifyDomain(body, registrar, env) {
 
   // Determine tier
   const tier = domain ? 'domain' : 'email';
-  // For domain-tier operators the id is derived from the already-public domain.
-  // For email-tier operators the id MUST be opaque — deriving from the email
-  // local-part leaks identifiable PII into a publicly enumerable field, which
-  // violates GDPR purpose-limitation and the Registry Conformance §8 rule that
-  // public-layer identifiers carry no identifiable personal data.
-  const operatorId = domain
-    ? domain.replace(/\./g, '-')
-    : 'op-' + generateToken(12);
+  // C1 (spec v0.2 §10.3): operator slug is the second-to-last segment of the
+  // canonical DID `did:axis:prime:<operator>:<agent>`. It must be derived
+  // from verification proof, never caller-chosen, so squatting a brand-name
+  // slug structurally requires verifying that brand's domain.
+  //
+  //   domain          → verified-domain root (TLD stripped, dots → dashes)
+  //   email           → opaque "op-<12hex>"
+  //   kyb_individual  → opaque
+  //   kyb_organization → verified domain if present, else opaque
+  //
+  // See src/utils/operator-slug.js for the full tier table + rationale.
+  const operatorId = deriveOperatorSlug(tier, domain);
 
   // Check if operator already exists.
   // M1: bind NULL (not '') when no domain is supplied — binding '' could
