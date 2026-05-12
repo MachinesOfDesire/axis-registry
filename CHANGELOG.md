@@ -8,6 +8,12 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ### Security
 
+- **C1 phase 2 — migrate existing agent DIDs to v0.2 form.** `migrations/0005_c1_v0_2_did_cutover.sql` re-issues `did` for every agent row that still carries the 3-colon v0.1 shape (`did:axis:prime:<agent>`) into the 4-colon v0.2 shape (`did:axis:prime:<operator>:<agent>`). 25 production rows at cutover, all v0.1. Operator IDs are left alone — they were already derived from verification proof at create time, just transformed differently than the v0.2 helper would emit for new operators. Per the 2026-05-11 locked decision, no legacy-alias period (almost entirely Josh's test data). Rollback recipe documented inline. Live migration applied 2026-05-12.
+
+
+
+### Security
+
 - **C1 phase 1 — operator-namespaced DIDs (spec v0.2 §10.3).** Closes the DID name-squatting finding by structurally requiring verification of an operator namespace before claiming any agent slug inside it. Implementation is additive only — no migration in this phase.
   - **`src/utils/operator-slug.js`** — tier-driven operator-slug derivation (`domain` → verified domain root with TLD stripped; `email` / `kyb_individual` → opaque `op-<24hex>`; `kyb_organization` → domain if present else opaque). Slug is derived from verification proof, never caller-chosen — that's what kills squatting at the protocol level.
   - **`src/utils/did.js`** — `parseAxisDid` accepts both v0.1 (`did:axis:prime:<agent>`) and v0.2 (`did:axis:prime:<operator>:<agent>`) canonical forms; `buildAxisDidV2` emits the v0.2 form.
