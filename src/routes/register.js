@@ -68,6 +68,71 @@ export async function handleRegister(body, registrar, env) {
     };
   }
 
+  // Velocity cap (Pre-Launch Engineering Brief §3.4): no operator may
+  // register more than VELOCITY_LIMIT agents in any rolling
+  // VELOCITY_WINDOW_HOURS-hour window, independent of tier. Stops
+  // bulk-pump abuse even when the operator is well within their per-tier
+  // slot cap.
+  //
+  // Counts succeeded-registrations only (rows in the `agents` table),
+  // so failed requests don't burn quota. The cap fires AFTER ownership +
+  // operator-status + domain-verification gates but BEFORE the atomic
+  // slot allocation — so a denied register here doesn't decrement the
+  // operator's slot counts.
+  //
+  // Returns 429 with `Retry-After` computed from the 10th-most-recent
+  // registration's created_at + window (when one exists) so callers
+  // know exactly how long to wait. Floor of 60s on Retry-After avoids a
+  // tight retry storm.
+  //
+  // Race semantics: COUNT-then-INSERT is not atomic. Two concurrent
+  // requests at the boundary could both pass the COUNT and both INSERT,
+  // yielding 11 instead of 10. Acceptable for an anti-abuse signal —
+  // the per-tier slot cap (atomic) remains the primary defense and the
+  // velocity cap is intentionally a soft brake on bulk-pump patterns,
+  // not a hard authorization gate.
+  const VELOCITY_LIMIT = 10;
+  const VELOCITY_WINDOW_HOURS = 24;
+  // datetime() normalization on the stored column matters: created_at is
+  // written as ISO 8601 with a 'T' separator and a 'Z' suffix
+  // (`new Date().toISOString()`), while SQLite's `datetime('now', ...)`
+  // returns a value with a space separator. Raw string comparison would
+  // sort 'T' (0x54) AFTER space (0x20), so an ISO timestamp on the same
+  // calendar date as the cutoff would always compare greater, regardless
+  // of actual time. Wrapping created_at in datetime() canonicalizes both
+  // sides into the same format before comparison.
+  const velocityCountRow = await env.DB.prepare(
+    `SELECT COUNT(*) as n FROM agents
+      WHERE operator_id = ?
+        AND datetime(created_at) > datetime('now', ?)`
+  ).bind(operator.id, `-${VELOCITY_WINDOW_HOURS} hours`).first();
+  if ((velocityCountRow?.n || 0) >= VELOCITY_LIMIT) {
+    let retryAfterSec = VELOCITY_WINDOW_HOURS * 3600;
+    const oldestInWindow = await env.DB.prepare(
+      `SELECT created_at FROM agents
+        WHERE operator_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1 OFFSET ?`
+    ).bind(operator.id, VELOCITY_LIMIT - 1).first();
+    if (oldestInWindow) {
+      const oldestMs = Date.parse(oldestInWindow.created_at);
+      if (Number.isFinite(oldestMs)) {
+        const remainingMs = oldestMs + VELOCITY_WINDOW_HOURS * 3600 * 1000 - Date.now();
+        retryAfterSec = Math.max(60, Math.ceil(remainingMs / 1000));
+      }
+    }
+    return {
+      status: 429,
+      body: {
+        error: {
+          code: 'velocity_limit_reached',
+          message: `Operator has registered the maximum ${VELOCITY_LIMIT} agents in the last ${VELOCITY_WINDOW_HOURS} hours. Try again later.`,
+        },
+      },
+      headers: { 'Retry-After': String(retryAfterSec) },
+    };
+  }
+
   // C2 (2026-05-08 security review): atomic slot allocation.
   //
   // Previously this was a three-step Read→Check→Increment sequence with
