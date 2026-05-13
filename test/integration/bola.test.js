@@ -49,9 +49,20 @@
  * Out of scope for this initial matrix (queued for follow-up PR per
  * test/integration/README.md "pending" list):
  *
- *   - POST /delegations BOLA (registrar B issuing delegation from A's agent)
- *   - DELETE /delegations/:id BOLA (registrar B revoking A's delegation)
- *   - POST /operators/verify-domain BOLA (registrar B verifying A's domain)
+ *  10. POST /delegations
+ *        - Registrar B → 403 not_your_resource when issuing on behalf of A's agent
+ *
+ *  11. POST /delegations with parent_credential_id
+ *        - Registrar B → 403 not_your_resource when chaining onto A's parent
+ *
+ *  12. DELETE /delegations/:id
+ *        - Registrar B → 403 not_your_resource when revoking A's delegation
+ *
+ *  13. POST /operators/verify-domain
+ *        - Registrar B → 403 not_your_resource when claiming A's existing operator
+ *
+ *  14. POST /operators/verify-domain/check
+ *        - Registrar B → 403 not_your_resource when checking A's operator's token
  *
  * The harness's createRegistrar defaults role='registrar', so most tests
  * use that. Admin/super_admin tests pass role explicitly.
@@ -348,4 +359,228 @@ test('BOLA positive control: super_admin CAN access /admin/operators (so matrix 
   });
 
   assert.equal(res.status, 200, 'super_admin must access /admin/operators');
+});
+
+// =====================================================================
+// Delegation + verify-domain BOLA paths (deferred from initial matrix
+// pending a read of the route code; now covered).
+// =====================================================================
+
+test('BOLA: POST /delegations — registrar B cannot issue delegation on behalf of A\'s agent', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const registrarA = await harness.createRegistrar({ id: 'registrar-a' });
+  const registrarB = await harness.createRegistrar({ id: 'registrar-b' });
+  const operatorA = await harness.createOperator({
+    registrar_id: registrarA.id,
+    tier: 'domain', domain: 'company-a.example.com', free_slots_total: 3,
+  });
+  const agentA = await seedAgentForRegistrar(harness, registrarA, operatorA, 'agent-a');
+
+  const res = await harness.fetch('/delegations', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${registrarB.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      issued_by: agentA.axis_id,                  // A's agent
+      issued_to: 'axis:somewhere:downstream',
+      root_operator: `axis:${operatorA.id}:operator`,
+      scope: ['scope:test'],
+      expires: new Date(Date.now() + 3600 * 1000).toISOString(),
+    }),
+  });
+
+  assert.equal(res.status, 403, 'cross-tenant delegation issue must be 403');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'not_your_resource', 'expected not_your_resource code');
+});
+
+test('BOLA: POST /delegations with parent_credential_id — registrar B cannot chain onto A\'s parent', async (t) => {
+  // The check has two halves: (1) issued_by ownership and (2) parent
+  // credential ownership. Here we set issued_by to B's own agent (so the
+  // first half passes) but parent_credential_id to A's delegation. B
+  // should still be denied with 403 not_your_resource on the parent.
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const registrarA = await harness.createRegistrar({ id: 'registrar-a' });
+  const registrarB = await harness.createRegistrar({ id: 'registrar-b' });
+  const operatorA = await harness.createOperator({
+    registrar_id: registrarA.id,
+    tier: 'domain', domain: 'company-a.example.com', free_slots_total: 3,
+  });
+  const operatorB = await harness.createOperator({
+    registrar_id: registrarB.id,
+    tier: 'domain', domain: 'company-b.example.com', free_slots_total: 3,
+  });
+  const agentA = await seedAgentForRegistrar(harness, registrarA, operatorA, 'agent-a');
+  const agentB = await seedAgentForRegistrar(harness, registrarB, operatorB, 'agent-b');
+
+  // A creates a delegation (the future parent).
+  const parentRes = await harness.fetch('/delegations', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${registrarA.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      issued_by: agentA.axis_id,
+      issued_to: 'axis:downstream:1',
+      root_operator: `axis:${operatorA.id}:operator`,
+      scope: ['scope:a'],
+      expires: new Date(Date.now() + 3600 * 1000).toISOString(),
+    }),
+  });
+  assert.equal(parentRes.status, 201, 'A-side parent delegation must succeed');
+  const parent = await parentRes.json();
+
+  // B tries to attach a child credential to A's parent. issued_by points
+  // at B's own agent so the first BOLA check passes; the parent check
+  // must catch the cross-tenant chain.
+  const res = await harness.fetch('/delegations', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${registrarB.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      issued_by: agentB.axis_id,
+      issued_to: 'axis:downstream:2',
+      root_operator: `axis:${operatorA.id}:operator`,
+      parent_credential_id: parent.id,
+      scope: ['scope:a'],
+      expires: new Date(Date.now() + 3600 * 1000).toISOString(),
+    }),
+  });
+
+  assert.equal(res.status, 403, 'cross-tenant parent chain must be 403');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'not_your_resource', 'expected not_your_resource code');
+});
+
+test('BOLA: DELETE /delegations/:id — registrar B cannot revoke registrar A\'s delegation', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const registrarA = await harness.createRegistrar({ id: 'registrar-a' });
+  const registrarB = await harness.createRegistrar({ id: 'registrar-b' });
+  const operatorA = await harness.createOperator({
+    registrar_id: registrarA.id,
+    tier: 'domain', domain: 'company-a.example.com', free_slots_total: 3,
+  });
+  const agentA = await seedAgentForRegistrar(harness, registrarA, operatorA, 'agent-a');
+
+  // A creates the delegation.
+  const createRes = await harness.fetch('/delegations', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${registrarA.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      issued_by: agentA.axis_id,
+      issued_to: 'axis:downstream:1',
+      root_operator: `axis:${operatorA.id}:operator`,
+      scope: ['scope:a'],
+      expires: new Date(Date.now() + 3600 * 1000).toISOString(),
+    }),
+  });
+  assert.equal(createRes.status, 201, 'A-side delegation must succeed');
+  const delegation = await createRes.json();
+
+  // B tries to revoke.
+  const res = await harness.fetch(`/delegations/${encodeURIComponent(delegation.id)}`, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${registrarB.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ reason: 'malicious' }),
+  });
+
+  assert.equal(res.status, 403, 'cross-tenant revoke must be 403');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'not_your_resource', 'expected not_your_resource code');
+
+  // Delegation should still be active.
+  const getRes = await harness.fetch(`/delegations/${encodeURIComponent(delegation.id)}`, {
+    method: 'GET',
+  });
+  const stillThere = await getRes.json();
+  assert.equal(stillThere.status, 'active', 'delegation must remain active after denied revoke');
+});
+
+test('BOLA: POST /operators/verify-domain — registrar B cannot claim A\'s existing operator', async (t) => {
+  // Setup creates A's operator with a known domain. B then calls
+  // verify-domain with the same domain — handler must catch the existing
+  // operator's registrar_id mismatch and return 403, NOT silently update
+  // the row's token (or worse, the registrar_id).
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const registrarA = await harness.createRegistrar({ id: 'registrar-a' });
+  const registrarB = await harness.createRegistrar({ id: 'registrar-b' });
+  await harness.createOperator({
+    registrar_id: registrarA.id,
+    tier: 'domain', domain: 'shared.example.com', free_slots_total: 3,
+  });
+
+  const res = await harness.fetch('/operators/verify-domain', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${registrarB.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      domain: 'shared.example.com',                          // A's domain
+      email: 'b-claimant@elsewhere.example.com',
+      method: 'dns_txt',
+    }),
+  });
+
+  assert.equal(res.status, 403, 'cross-tenant claim must be 403');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'not_your_resource', 'expected not_your_resource code');
+});
+
+test('BOLA: POST /operators/verify-domain/check — registrar B cannot check A\'s pending verification', async (t) => {
+  // Edge case: B somehow learns A's verification token. The route must
+  // still 403 on the registrar_id mismatch. Setup directly inserts the
+  // token into A's operator row so B can attempt the check with a known
+  // value.
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const registrarA = await harness.createRegistrar({ id: 'registrar-a' });
+  const registrarB = await harness.createRegistrar({ id: 'registrar-b' });
+  const operatorA = await harness.createOperator({
+    registrar_id: registrarA.id,
+    tier: 'domain', domain: 'shared2.example.com', free_slots_total: 3,
+  });
+  const sharedToken = 'fake-token-known-to-b';
+  const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  await harness.db.prepare(
+    `UPDATE operators
+       SET domain_verification_token = ?, domain_verification_expires = ?, domain_verification_method = 'dns_txt'
+       WHERE id = ?`
+  ).bind(sharedToken, future, operatorA.id).run();
+
+  const res = await harness.fetch('/operators/verify-domain/check', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${registrarB.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      domain: 'shared2.example.com',
+      token: sharedToken,
+    }),
+  });
+
+  assert.equal(res.status, 403, 'cross-tenant check must be 403');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'not_your_resource', 'expected not_your_resource code');
 });
