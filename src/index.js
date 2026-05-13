@@ -189,7 +189,7 @@ export default {
           }
         }
 
-        return addCors(jsonResponse(200, response));
+        return addCors(jsonResponse(200, response, publicReadCacheHeaders(request)));
       }
 
       // GET /agents/:agent_id — Resolve agent identity record (public).
@@ -197,14 +197,16 @@ export default {
       if (method === 'GET' && path.match(/^\/agents\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/agents/')[1]);
         const result = await handleGetAgent(agentId, env, request, registrar);
-        return addCors(jsonResponse(result.status, result.body));
+        const cacheHeaders = result.status === 200 ? publicReadCacheHeaders(request) : {};
+        return addCors(jsonResponse(result.status, result.body, cacheHeaders));
       }
 
       // GET /resolve/:did — Resolve DID to DID Document
       if (method === 'GET' && path.match(/^\/resolve\/(.+)$/)) {
         const did = decodeURIComponent(path.split('/resolve/')[1]);
         const result = await handleResolve(did, env);
-        return addCors(jsonResponse(result.status, result.body));
+        const cacheHeaders = result.status === 200 ? publicReadCacheHeaders(request) : {};
+        return addCors(jsonResponse(result.status, result.body, cacheHeaders));
       }
 
       // GET /verify?token=<AIT>
@@ -588,6 +590,37 @@ function jsonResponse(status, body, extraHeaders = {}) {
     status,
     headers: { 'Content-Type': 'application/json', ...extraHeaders }
   });
+}
+
+/**
+ * Edge caching for public reads (Pre-Launch Engineering Brief §3.4).
+ *
+ * Aggressive `Cache-Control: public, max-age=3600` on `GET /agents/:id`,
+ * `GET /operators/:id`, and `GET /resolve/:did` when the request is
+ * unauthenticated. These keys never change (an agent's `did` / `axis_id`
+ * is permanent), so a 1-hour edge cache dramatically cuts Worker
+ * invocations for hot identities at zero correctness cost.
+ *
+ * Conditional on the request: we only cache the PUBLIC LAYER. If the
+ * caller is sending `Authorization` or `?ait=`, they're attempting to
+ * unlock the presentation layer (per src/routes/resolve.js
+ * extractPresentationContext) and the response will vary by who they
+ * are. The cache key has no way to partition by Bearer value without a
+ * `Vary: Authorization` header that turns each Bearer into its own
+ * cache entry — which defeats the cache. So: skip the cache header
+ * entirely on presentation-attempt requests. CF's default (no cache)
+ * applies.
+ *
+ * Status-aware: callers only invoke this for 200 responses. 404s on
+ * these routes shouldn't be cached — a cached 404 would mask a freshly-
+ * registered agent for an hour.
+ */
+function publicReadCacheHeaders(request) {
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader) return {};
+  const aitQuery = new URL(request.url).searchParams.get('ait');
+  if (aitQuery) return {};
+  return { 'Cache-Control': 'public, max-age=3600' };
 }
 
 /**
