@@ -379,7 +379,8 @@ export default {
             ip_address: request.headers.get('cf-connecting-ip')
           }));
         }
-        return addCors(jsonResponse(result.status, result.body));
+        // Velocity-cap path returns a Retry-After header; thread it through.
+        return addCors(jsonResponse(result.status, result.body, result.headers || {}));
       }
 
       // PATCH /agents/:agent_id

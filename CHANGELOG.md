@@ -6,6 +6,10 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Security
+
+- **Velocity cap on `POST /register`: 10 agents per operator per rolling 24-hour window.** Pre-launch brief §3.4. Independent of tier; an operator at the cap gets a 429 `velocity_limit_reached` response with a `Retry-After` header computed from the 10th-most-recent registration's `created_at + 24h` (floored at 60s to avoid retry storms). Cap fires AFTER the BOLA / operator-status / domain-verification gates but BEFORE the atomic C2 slot allocation, so a velocity-denied register doesn't decrement the operator's slot counters. Counts succeeded registrations only (rows in the `agents` table), so failed requests don't burn quota. Soft-brake against bulk-pump abuse; the per-tier slot cap remains the primary defense. The COUNT-then-INSERT pattern is intentionally not atomic — the race is bounded to occasional 11-12 under contention and is acceptable for an anti-abuse signal. Includes a subtle SQL hardening: `datetime(created_at)` normalization on the cutoff comparison, because raw-string comparison of ISO 8601 `created_at` ('T' separator) against SQLite's `datetime('now', '-24 hours')` (space separator) would sort 'T' (0x54) after space (0x20) and silently fail at-or-near the window boundary. Threaded `Retry-After` through `jsonResponse`'s `extraHeaders` slot via a new `result.headers` field on `handleRegister`. 4 new integration tests in `test/integration/velocity-cap.test.js` cover the cap-fires path, per-operator isolation, and rolling-window semantics (back-date one row, the 11th register succeeds).
+
 ### Tests
 
 - **Comprehensive integration-test coverage — `test/integration/` (51 new tests across 5 files).** Resolves the entire [axis-registry test-gap Coordination item](https://www.notion.so/35df359483b28188b260c8d41fbf366b) in one PR — all five queued matrices ship together rather than as a sequence of small follow-on PRs. Builds on the Miniflare harness from PR #14. Test count: 40 unit + 5 C2 slot-race + 51 new = 96/96 pass.
