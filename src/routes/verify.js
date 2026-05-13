@@ -100,6 +100,7 @@ export async function handleVerifyAIT(token, env) {
         status: 200,
         body: {
           valid: false,
+          code: 'invalid_signature',
           agent_id: agent.axis_id,
           reason: 'Invalid signature'
         }
@@ -113,6 +114,7 @@ export async function handleVerifyAIT(token, env) {
         status: 200,
         body: {
           valid: false,
+          code: 'token_expired',
           agent_id: agent.axis_id,
           reason: 'Token expired',
           expired_at: new Date(payload.exp * 1000).toISOString()
@@ -122,10 +124,19 @@ export async function handleVerifyAIT(token, env) {
 
     // Check agent status
     if (agent.status !== 'active') {
+      // Map agent status to a stable error code consumers can branch on.
+      // revoked / deactivated both surface as 'agent_revoked' (callers
+      // treat them identically — the agent is no longer usable). suspended
+      // gets its own code in case callers want to distinguish "temporary
+      // hold" from "permanent revocation".
+      const code = (agent.status === 'revoked' || agent.status === 'deactivated')
+        ? 'agent_revoked'
+        : 'agent_suspended';
       return {
         status: 200,
         body: {
           valid: false,
+          code,
           agent_id: agent.axis_id,
           reason: `Agent status: ${agent.status}`,
           status: agent.status
