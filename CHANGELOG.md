@@ -6,6 +6,10 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Tests
+
+- **BOLA matrix — `test/integration/bola.test.js` (10 tests).** Locks in per-route ownership semantics on every high-leverage mutating + scoped-read path: `POST /register` (cross-tenant register denied with 403 `not_your_resource` + slot counters unchanged), `DELETE /agents/:id` (cross-tenant deactivate denied), `GET /agents?operator_id=` (cross-tenant list denied; unauthed → 401 before BOLA check), `GET /operators` and `GET /audit` (self-scoped result sets; no cross-tenant leakage), `/admin/*` (plain `registrar` role → 403 `forbidden`), `/admin/force-deactivate-agent` + `/admin/force-revoke-delegation` (admin role → 403; super_admin required), plus a super_admin positive control so the matrix isn't a universal deny. Builds on the Miniflare integration harness shipped in PR #14. Closes the BOLA-matrix line item on the [test-gap Coordination item](https://www.notion.so/35df359483b28188b260c8d41fbf366b); remaining queued matrices (audit-before-mutate, AIT verification, delegation chain attenuation, public-vs-presentation gating) follow incrementally per `test/integration/README.md`. Test count: 40 unit + 5 C2 slot-race + 10 BOLA = 55/55 pass.
+
 ### Security
 
 - **L3 — `seed-key.sql` no longer committed; `.example` placeholder shipped instead.** The live production registrar API key hash was previously committed in the public repo. SHA-256 is one-way, but publishing the live hash removed a layer of obscurity (offline brute-force on the plaintext, algorithm confirmation) for zero operational benefit. `seed-key.sql` is now gitignored alongside `wrangler.toml`; `seed-key.sql.example` documents the workflow (generate Bearer client-side, compute SHA-256, paste, apply, delete local copy). `seed-demo-agents.sql` gets a prominent DEV-ONLY warning header — the rows it seeds are intentional public demo state on `registry.axisprime.ai`, not a leak, but a third-party deployer running this file would inherit the demo's keypair-authentication path. The H3 schema CHECK constraint (PR #2) already prevents an empty seed row from drifting back in.
