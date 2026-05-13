@@ -6,6 +6,20 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Tests
+
+- **Comprehensive integration-test coverage — `test/integration/` (51 new tests across 5 files).** Resolves the entire [axis-registry test-gap Coordination item](https://www.notion.so/35df359483b28188b260c8d41fbf366b) in one PR — all five queued matrices ship together rather than as a sequence of small follow-on PRs. Builds on the Miniflare harness from PR #14. Test count: 40 unit + 5 C2 slot-race + 51 new = 96/96 pass.
+  - **BOLA matrix — `bola.test.js` (15 tests).** Per-route ownership gates on every mutating + scoped-read path: `POST /register`, `DELETE /agents/:id`, `GET /agents?operator_id=` (cross-tenant + unauthed-401-before-BOLA), `GET /operators` and `GET /audit` (self-scoped), `/admin/*` role gate, `/admin/force-deactivate-agent` + `/admin/force-revoke-delegation` super_admin gate, super_admin positive control, plus the previously-deferred `POST /delegations` (cross-tenant issue + cross-tenant parent-chain), `DELETE /delegations/:id`, and `POST /operators/verify-domain` + `/check` cross-registrar domain-claim paths.
+  - **Presentation-layer matrix — `presentation-layer.test.js` (9 tests).** `GET /agents/:id` field-gating across the unlock conditions: unauthenticated → public layer only; owning registrar / admin / super_admin Bearer → unlocked; non-owning plain registrar → public layer only; valid AIT in Authorization → unlocked; AIT with missing `aud` (H1 silent fail) / bad signature / oversized 5 KB token (M2 cap) → public layer only.
+  - **Audit-before-mutate — `audit-before-mutate.test.js` (6 tests).** Break-glass `/admin/force-*` paths: success writes audit row with `target_registrar_id` matching the owning registrar (H7 hardening); missing target returns 404 BEFORE any audit row is written; missing `reason` returns 400 BEFORE any lookup or audit row.
+  - **Delegation chain matrix — `delegation-chain.test.js` (10 tests).** Happy path + child attenuation (subset scope passes; wider scope → 400 `delegation_chain_invalid`); `root_operator` mismatch with parent; `max_sub_delegation_depth=0` blocks further chaining; M5 expires-horizon (>90 days → `expires_too_far`; past/malformed → `invalid_request`); DELETE cascade through 3-level chain (cascadeRevoked=2); M3 depth cap (18-deep direct-DB chain, root DELETE stops cascade at CASCADE_MAX_DEPTH=16, beyond-cap delegation stays active).
+  - **AIT verification matrix — `ait-verify.test.js` (11 tests).** `GET /verify?token=` failure paths: malformed token → 400; wrong `typ` / wrong `alg` → 400; H1 `aud` enforcement (missing / empty / whitespace-only → 400 `missing_aud`); unknown `iss` → 404; bad signature → 200 `valid:false` reason="Invalid signature"; expired-but-validly-signed → 200 `valid:false` reason="Token expired"; deactivated agent → 200 `valid:false` reason starts with "Agent status:"; happy path positive control returning `valid:true` with operator_id in canonical `axis:<slug>:operator` form.
+  - Shared helpers in `test/integration/_helpers.js`: real Ed25519 keypairs via Node Web Crypto, signed-AIT mint, `registerRealAgent()` for tests that need verifiable signatures.
+
+### Security
+
+- **L3 — `seed-key.sql` no longer committed
+
 ### Security
 
 - **L3 — `seed-key.sql` no longer committed; `.example` placeholder shipped instead.** The live production registrar API key hash was previously committed in the public repo. SHA-256 is one-way, but publishing the live hash removed a layer of obscurity (offline brute-force on the plaintext, algorithm confirmation) for zero operational benefit. `seed-key.sql` is now gitignored alongside `wrangler.toml`; `seed-key.sql.example` documents the workflow (generate Bearer client-side, compute SHA-256, paste, apply, delete local copy). `seed-demo-agents.sql` gets a prominent DEV-ONLY warning header — the rows it seeds are intentional public demo state on `registry.axisprime.ai`, not a leak, but a third-party deployer running this file would inherit the demo's keypair-authentication path. The H3 schema CHECK constraint (PR #2) already prevents an empty seed row from drifting back in.
