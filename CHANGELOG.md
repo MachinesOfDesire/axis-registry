@@ -6,6 +6,10 @@ This worker does not follow strict semver — the wire-protocol contract is owne
 
 ## [Unreleased]
 
+### Changed
+
+- **`GET /verify?token=` now emits stable `code` field on `valid:false` responses.** Previously, the three `valid:false` paths (invalid signature, token expired, agent revoked/deactivated/suspended) returned `{valid:false, reason: "<free text>"}`, forcing consumers to regex-match the reason string for classification. Each path now also returns a stable `code`: `invalid_signature` / `token_expired` / `agent_revoked` (or `agent_suspended` for the suspended state). Additive — existing consumers that read `reason` continue to work; new consumers can read `code` directly. Closes axis-comments WC-L4 (regex error classifier) on the registry side. Coordinated with axis-protocol-sdk surfacing the field and axis-comments-ghost consuming it.
+
 ### Performance
 
 - **Edge caching on public reads: `Cache-Control: public, max-age=3600` on `GET /agents/:id`, `GET /operators/:id`, `GET /resolve/:did`.** Pre-launch brief §3.4. AXIS identifiers (`agent_id`, `did`, `operator_id`) are permanent once registered, so a 1-hour edge cache costs nothing and dramatically cuts Worker invocations for hot identities (verification widgets resolving the same agents on every page view, audit pipelines re-fetching the same operator records, etc.). Header is **conditional on (a) status === 200 and (b) the request not attempting presentation-layer unlock**. Presentation-attempt requests — those carrying `Authorization` or `?ait=` — skip the cache header entirely; partitioning the cache by Bearer value would defeat the cache, and serving a cached public-layer response to a later authenticated request would be wrong. 404s also skip the cache (a cached 404 would mask a freshly-registered identity for the cache lifetime). 8 new integration tests in `test/integration/edge-cache.test.js` cover the conditional matrix across all three routes.
