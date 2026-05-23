@@ -44,3 +44,6 @@ build/
 # Misc
 *.log
 .cache/
+
+# Personal / session-scoped context for Claude Code (never committed)
+CLAUDE.local.md
