@@ -187,9 +187,161 @@ export default {
             response.email = operator.email;
             response.domain_verified = Boolean(operator.domain_verified);
           }
+          // v0.x: parent_operator_id (when set) is visible in the presentation
+          // layer. Org-affiliation is part of an operator's verifiable
+          // identity in the three-level model — relying parties (e.g.,
+          // governors walking delegation chains) need to see it. We do not
+          // gate it behind owner/admin like email; the relationship is a
+          // first-class identity fact, not a contact detail.
+          if (operator.parent_operator_id) {
+            response.parent_operator_id = operator.parent_operator_id;
+          }
         }
 
         return addCors(jsonResponse(200, response, publicReadCacheHeaders(request)));
+      }
+
+      // PATCH /operators/:id — Update operator fields. v0.x scope: parent_operator_id only.
+      //
+      // Registrar-scoped: caller must own the operator. Cross-registrar
+      // mutations are rejected with `not_your_resource` (BOLA, matches the
+      // existing pattern). If parent_operator_id is being set, the proposed
+      // parent must also belong to the same registrar
+      // (`parent_operator_cross_registrar`).
+      //
+      // Pass parent_operator_id: null to clear an existing parent link.
+      if (method === 'PATCH' && path.match(/^\/operators\/([^/]+)$/)) {
+        if (!registrar) {
+          return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
+        }
+        const opId = decodeURIComponent(path.match(/^\/operators\/([^/]+)$/)[1]);
+        const operator = await env.DB.prepare(
+          'SELECT id, registrar_id, parent_operator_id FROM operators WHERE id = ?'
+        ).bind(opId).first();
+        if (!operator) {
+          return addCors(jsonResponse(404, { error: { code: 'not_found', message: 'Operator not found' } }));
+        }
+        if (operator.registrar_id !== registrar.id) {
+          return addCors(jsonResponse(403, { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } }));
+        }
+
+        let body = {};
+        try { body = await request.json(); } catch (e) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'Body must be valid JSON' } }));
+        }
+
+        // v0.x: only parent_operator_id is mutable here. Reject unknown
+        // fields explicitly to keep the surface tight and surprises out of
+        // the audit log.
+        const allowedKeys = ['parent_operator_id'];
+        const bodyKeys = Object.keys(body);
+        const unknownKeys = bodyKeys.filter(k => !allowedKeys.includes(k));
+        if (unknownKeys.length > 0) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: `Unknown field(s): ${unknownKeys.join(', ')}. v0.x PATCH accepts only: ${allowedKeys.join(', ')}` } }));
+        }
+        if (!bodyKeys.includes('parent_operator_id')) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'Body must include parent_operator_id (string to set, null to clear)' } }));
+        }
+
+        const newParent = body.parent_operator_id;
+
+        if (newParent !== null) {
+          if (typeof newParent !== 'string' || newParent.length === 0) {
+            return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'parent_operator_id must be a non-empty string or null' } }));
+          }
+          if (newParent === opId) {
+            // Direct self-loop. Multi-hop cycle detection is out of scope
+            // for v0.x; flagged as open question in the spec. The direct
+            // case is the obvious foot-gun and is cheap to reject here.
+            return addCors(jsonResponse(400, { error: { code: 'invalid_parent_operator', message: 'parent_operator_id cannot reference the operator itself' } }));
+          }
+          const parent = await env.DB.prepare(
+            'SELECT id, registrar_id FROM operators WHERE id = ?'
+          ).bind(newParent).first();
+          if (!parent) {
+            return addCors(jsonResponse(400, { error: { code: 'invalid_parent_operator', message: 'parent_operator_id does not reference an existing operator' } }));
+          }
+          if (parent.registrar_id !== registrar.id) {
+            return addCors(jsonResponse(403, { error: { code: 'parent_operator_cross_registrar', message: 'parent_operator_id belongs to a different registrar' } }));
+          }
+        }
+
+        await env.DB.prepare(
+          `UPDATE operators SET parent_operator_id = ?, updated_at = datetime('now') WHERE id = ?`
+        ).bind(newParent, opId).run();
+
+        // Deferred audit write; mutation already committed.
+        ctx.waitUntil(logAudit(env, {
+          action: 'update_operator_parent',
+          actor: registrar.id,
+          target: opId,
+          operator_id: opId,
+          registrar_id: registrar.id,
+          target_registrar_id: operator.registrar_id,
+          details: {
+            previous_parent_operator_id: operator.parent_operator_id || null,
+            new_parent_operator_id: newParent,
+          },
+          ip_address: request.headers.get('cf-connecting-ip'),
+        }));
+
+        return addCors(jsonResponse(200, {
+          operator_id: opId,
+          parent_operator_id: newParent,
+          updated: true,
+        }));
+      }
+
+      // GET /operators/:id/children — Paginated child operators of :id.
+      //
+      // Registrar-scoped: caller must own the parent operator, OR be admin+.
+      // Returns only children that also belong to the calling registrar
+      // (admins see all). Pagination follows the same convention as GET
+      // /operators.
+      if (method === 'GET' && path.match(/^\/operators\/([^/]+)\/children$/)) {
+        if (!registrar) {
+          return addCors(jsonResponse(401, { error: { code: 'unauthorized', message: 'Valid registrar API key required' } }));
+        }
+        const parentId = decodeURIComponent(path.match(/^\/operators\/([^/]+)\/children$/)[1]);
+        const parent = await env.DB.prepare(
+          'SELECT id, registrar_id FROM operators WHERE id = ?'
+        ).bind(parentId).first();
+        if (!parent) {
+          return addCors(jsonResponse(404, { error: { code: 'not_found', message: 'Operator not found' } }));
+        }
+        const isOwner = parent.registrar_id === registrar.id;
+        const isAdminPlus = registrar.role === 'admin' || registrar.role === 'super_admin';
+        if (!isOwner && !isAdminPlus) {
+          return addCors(jsonResponse(403, { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } }));
+        }
+
+        const limit = clampPaginationInt(url.searchParams.get('limit'), 50, 500, 1);
+        const offset = clampPaginationInt(url.searchParams.get('offset'), 0, Number.MAX_SAFE_INTEGER);
+
+        // Owner sees their own children only; admin+ sees all children of
+        // the parent regardless of registrar (cross-tenant read).
+        const childrenQuery = isAdminPlus && !isOwner
+          ? 'SELECT id, email, domain, verification_tier, domain_verified, status, created_at FROM operators WHERE parent_operator_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+          : 'SELECT id, email, domain, verification_tier, domain_verified, status, created_at FROM operators WHERE parent_operator_id = ? AND registrar_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?';
+        const countQuery = isAdminPlus && !isOwner
+          ? 'SELECT COUNT(*) as total FROM operators WHERE parent_operator_id = ?'
+          : 'SELECT COUNT(*) as total FROM operators WHERE parent_operator_id = ? AND registrar_id = ?';
+
+        const childrenStmt = isAdminPlus && !isOwner
+          ? env.DB.prepare(childrenQuery).bind(parentId, limit, offset)
+          : env.DB.prepare(childrenQuery).bind(parentId, registrar.id, limit, offset);
+        const countStmt = isAdminPlus && !isOwner
+          ? env.DB.prepare(countQuery).bind(parentId)
+          : env.DB.prepare(countQuery).bind(parentId, registrar.id);
+
+        const children = await childrenStmt.all();
+        const count = await countStmt.first();
+
+        return addCors(jsonResponse(200, {
+          parent_operator_id: parentId,
+          children: children.results || [],
+          total: count?.total || 0,
+        }));
       }
 
       // GET /agents/:agent_id — Resolve agent identity record (public).

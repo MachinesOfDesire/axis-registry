@@ -70,14 +70,21 @@ CREATE TABLE IF NOT EXISTS operators (
   stripe_customer_id TEXT,                      -- Stripe customer ID
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'deactivated')),
   registrar_id TEXT NOT NULL,                   -- which registrar onboarded this operator
+  parent_operator_id TEXT,                      -- nullable; references operators(id).
+                                                -- NULL = top-level entity (org or
+                                                -- free-standing individual).
+                                                -- Set = child operator (user under an org).
+                                                -- See migration 0006 + v0.x spec.
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (registrar_id) REFERENCES registrars(id)
+  FOREIGN KEY (registrar_id) REFERENCES registrars(id),
+  FOREIGN KEY (parent_operator_id) REFERENCES operators(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_operators_email ON operators(email);
 CREATE INDEX IF NOT EXISTS idx_operators_domain ON operators(domain);
 CREATE INDEX IF NOT EXISTS idx_operators_stripe ON operators(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_operators_parent ON operators(parent_operator_id);
 
 -- ============================================
 -- AGENTS

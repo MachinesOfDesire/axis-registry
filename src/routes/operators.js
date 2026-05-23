@@ -10,7 +10,7 @@ import { generateToken } from '../utils/crypto.js';
 import { deriveOperatorSlug } from '../utils/operator-slug.js';
 
 export async function handleVerifyDomain(body, registrar, env) {
-  const { domain, method, email } = body;
+  const { domain, method, email, parent_operator_id } = body;
 
   if (!email) {
     return {
@@ -25,6 +25,40 @@ export async function handleVerifyDomain(body, registrar, env) {
       status: 400,
       body: { error: { code: 'invalid_request', message: 'method must be dns_txt or http_file' } }
     };
+  }
+
+  // v0.x: optional parent_operator_id for three-level principal hierarchy
+  // (organization → user → agent). Per spec docs/specs/axis-registry-v0.x-changes-spec.md.
+  //
+  // BOLA: parent must exist AND belong to the calling registrar. Cross-
+  // registrar parent injection is a privacy + authorization escalation:
+  // registrar X must not be able to plant their operators as children of
+  // registrar Y's organizations.
+  if (parent_operator_id !== undefined && parent_operator_id !== null) {
+    if (typeof parent_operator_id !== 'string' || parent_operator_id.length === 0) {
+      return {
+        status: 400,
+        body: { error: { code: 'invalid_request', message: 'parent_operator_id must be a non-empty string' } }
+      };
+    }
+    const parent = await env.DB.prepare(
+      'SELECT id, registrar_id FROM operators WHERE id = ?'
+    ).bind(parent_operator_id).first();
+    if (!parent) {
+      return {
+        status: 400,
+        body: { error: { code: 'invalid_parent_operator', message: 'parent_operator_id does not reference an existing operator' } }
+      };
+    }
+    if (parent.registrar_id !== registrar.id) {
+      // Stable error code per spec. Distinct from the generic 'not_your_resource'
+      // because the resource being touched is the child being created, not the
+      // parent — the parent is a foreign reference. Differentiated for auditors.
+      return {
+        status: 403,
+        body: { error: { code: 'parent_operator_cross_registrar', message: 'parent_operator_id belongs to a different registrar' } }
+      };
+    }
   }
 
   // Determine tier
@@ -72,12 +106,14 @@ export async function handleVerifyDomain(body, registrar, env) {
        domain_verification_method = ?, updated_at = datetime('now') WHERE id = ?`
     ).bind(domain || null, token, expiresAt, verificationMethod, operator.id).run();
   } else {
-    // Create new operator
+    // Create new operator. parent_operator_id is nullable; v0.x default for
+    // top-level entities is NULL (preserves prior two-level model).
+    const parentOpId = (parent_operator_id === undefined || parent_operator_id === null) ? null : parent_operator_id;
     await env.DB.prepare(
       `INSERT INTO operators (id, email, domain, verification_tier, domain_verification_token,
-       domain_verification_expires, domain_verification_method, registrar_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(operatorId, email, domain || null, tier, token, expiresAt, domain ? verificationMethod : null, registrar.id).run();
+       domain_verification_expires, domain_verification_method, registrar_id, parent_operator_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(operatorId, email, domain || null, tier, token, expiresAt, domain ? verificationMethod : null, registrar.id, parentOpId).run();
 
     // Create agent slots based on tier
     const freeSlots = tier === 'domain' ? 3 : 0;

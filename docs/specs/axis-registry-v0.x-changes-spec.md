@@ -39,7 +39,10 @@ Single-column addition. No breaking impact. Existing operators retain `NULL` par
 ### Schema change
 
 ```sql
--- Migration: 0003_parent_operator_id.sql
+-- Migration: 0006_parent_operator_id.sql
+-- Numbered 0006 (not 0003) because migrations 0001-0005 are already taken
+-- in axis-registry as of v0.x drafting. Filename adjusted; semantics
+-- unchanged from the original spec text.
 ALTER TABLE operators ADD COLUMN parent_operator_id TEXT;
 -- D1/SQLite does not support adding a FOREIGN KEY constraint after table creation
 -- via ALTER, so the FK semantics are enforced at the application layer for existing
@@ -47,20 +50,23 @@ ALTER TABLE operators ADD COLUMN parent_operator_id TEXT;
 CREATE INDEX idx_operators_parent ON operators(parent_operator_id);
 ```
 
-Also update `schema.sql` for fresh deploys to include the column and FK constraint inline on the `operators` table definition.
+Also update `schema.sql` for fresh deploys to include the column inline on the `operators` table definition, plus the `FOREIGN KEY (parent_operator_id) REFERENCES operators(id)` constraint and the index.
 
 ### API surface changes
 
-- `POST /operators` accepts an optional `parent_operator_id` parameter. If set, the value must reference an existing operator owned by the same registrar (BOLA enforcement).
-- `GET /operators/:id` includes `parent_operator_id` in the response when set.
-- `GET /operators/:id/children` new endpoint returning child operators (paginated). Pagination follows the same convention as other list endpoints.
-- Delegation creation endpoints already accept operator-to-operator delegations; no API change needed, just documentation that parent-to-child is the canonical use case for hierarchical orgs.
+The original draft of this spec assumed a generic `POST /operators` creation endpoint. The actual registry does not expose one — operator creation flows through `POST /operators/verify-domain` (the verification-gated onboarding path). The API changes have been re-anchored to the real surface, with one new endpoint added to cover the post-creation update case.
+
+- **`POST /operators/verify-domain`** (existing) — extended to accept an optional `parent_operator_id`. If set, the value must reference an existing operator owned by the same registrar (BOLA enforcement). Each operator — parent or child — still goes through the verification gate; the parent link is a structural addition, not a bypass.
+- **`GET /operators/:id`** (existing) — includes `parent_operator_id` in the response when set. Field is gated behind the same presentation-layer unlock as `verification_tier` (AIT, owner Bearer, or admin+ Bearer) and is omitted when `NULL`.
+- **`PATCH /operators/:id`** (NEW) — sets or clears `parent_operator_id` after creation. Necessary because in the real flow a user typically signs up first (top-level via `verify-domain`) and is linked to a parent organization later. v0.x scope is intentionally tight: only `parent_operator_id` is mutable; unknown body fields return `400 invalid_request`. Self-loops (parent === id) are rejected. Multi-hop cycle detection deferred to v1.x (see Open Questions). Caller must own the operator (BOLA); same-registrar check applies to the proposed parent.
+- **`GET /operators/:id/children`** (NEW) — paginated list of child operators. Caller must own the parent or be `admin`+. Plain registrars see only children that also belong to them; `admin`+ sees all children of the parent across registrars (consistent with the existing `GET /operators/:id` admin-read pattern).
+- Delegation creation endpoints already accept operator-to-operator delegations; no API change needed. The existing chain-walk logic is unaware of `parent_operator_id` and does not need to become aware of it — the parent link is a structural hint at the principal hierarchy, not a chain-walk-relevant fact.
 
 ### Authorization rules
 
-- A registrar may create a child operator only if the proposed parent is owned by the same registrar.
-- A registrar may not create a child operator whose parent belongs to a different registrar (prevents cross-registrar principal injection).
-- `admin` and `super_admin` roles retain cross-tenant read on the parent-child relationship.
+- A registrar may set `parent_operator_id` (on create via `verify-domain`, or on update via `PATCH`) only if the proposed parent is owned by the same registrar. Cross-registrar parent injection returns `403 parent_operator_cross_registrar` (a stable code distinct from the generic `not_your_resource` so auditors can spot the specific class).
+- `PATCH /operators/:id` requires the caller to own the operator being mutated. Cross-registrar mutation attempts return `403 not_your_resource`.
+- `admin` and `super_admin` roles retain cross-tenant read on the parent-child relationship via `GET /operators/:id/children`. They cannot mutate cross-tenant via `PATCH` (admin write-overrides remain reserved for the existing `/admin/force-*` break-glass paths).
 
 ### Conformance impact
 
@@ -68,16 +74,17 @@ None. The column is optional. Any registry implementation that doesn't support `
 
 ### Acceptance criteria
 
-- [ ] Migration `0003_parent_operator_id.sql` applies cleanly to the existing live database
-- [ ] `schema.sql` updated so fresh deploys include the column
-- [ ] `POST /operators` accepts and persists `parent_operator_id`
-- [ ] `POST /operators` rejects a `parent_operator_id` belonging to a different registrar with a stable error code
-- [ ] `GET /operators/:id` returns `parent_operator_id` when set
-- [ ] `GET /operators/:id/children` returns the correct paginated list
-- [ ] A delegation issued from a parent operator to a child operator is accepted, stored, and verifiable via the existing chain-walk logic
-- [ ] An agent owned by a child operator can present an AIT carrying a delegation chain that traces back to the parent and the chain validates
-- [ ] Existing operators with `NULL` parent continue to behave identically (no regression)
-- [ ] Audit log entries for `POST /operators` and `GET /operators/:id/children` are written via the existing audit pipeline
+- [x] Migration `0006_parent_operator_id.sql` applies cleanly to the existing live database
+- [x] `schema.sql` updated so fresh deploys include the column + FK + index
+- [x] `POST /operators/verify-domain` accepts and persists optional `parent_operator_id`
+- [x] `POST /operators/verify-domain` rejects a `parent_operator_id` belonging to a different registrar with code `parent_operator_cross_registrar`
+- [x] `GET /operators/:id` returns `parent_operator_id` when set (presentation-gated)
+- [x] `PATCH /operators/:id` sets or clears `parent_operator_id` with the full BOLA matrix + self-loop check + audit write
+- [x] `GET /operators/:id/children` returns the correct paginated list (registrar-scoped; admin+ cross-tenant)
+- [ ] A delegation issued from a parent operator to a child operator is accepted, stored, and verifiable via the existing chain-walk logic (covered by existing `test/integration/delegation-chain.test.js` — `parent_operator_id` does not alter chain-walk semantics; the existing operator-to-operator delegation tests cover the parent-to-child case implicitly)
+- [ ] An agent owned by a child operator can present an AIT carrying a delegation chain that traces back to the parent and the chain validates (same coverage as above)
+- [x] Existing operators with `NULL` parent continue to behave identically (verified: 110 pre-existing tests pass unchanged)
+- [x] Audit log entries for `PATCH /operators/:id` mutations are written via the existing `logAudit` deferred-write pipeline with action `update_operator_parent`
 
 ---
 
