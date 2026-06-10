@@ -12,7 +12,7 @@ import { handleResolve, handleGetAgent, extractPresentationContext } from './rou
 import { handleVerifyIdentity, handleVerifyAIT, handleVerifySignature } from './routes/verify.js';
 import { handleRevocation, handleDeactivateAgent, forceDeactivateAgent } from './routes/revocation.js';
 import { handleCreateDelegation, handleGetDelegation, handleRevokeDelegation, handleVerifyChain, forceRevokeDelegation } from './routes/delegations.js';
-import { handleVerifyDomain, handleCheckDomain } from './routes/operators.js';
+import { handleVerifyDomain, handleCheckDomain, handleSetOperatorVerification } from './routes/operators.js';
 import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from './middleware/auth.js';
 import { corsHeaders, handleOptions } from './middleware/cors.js';
 import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit.js';
@@ -560,6 +560,19 @@ export default {
         const body = await request.json();
         const result = await handleCheckDomain(body, registrar, env);
         return addCors(jsonResponse(result.status, result.body));
+      }
+
+      // POST /operators/:id/verification — registrar-attested Verified Identity
+      // (payment + KYC completed on the registrar side). Raises the enforced
+      // agent cap. BOLA-scoped to the calling registrar's own operators.
+      {
+        const m = path.match(/^\/operators\/([^/]+)\/verification$/);
+        if (method === 'POST' && m) {
+          const opId = decodeURIComponent(m[1]);
+          const body = await request.json().catch(() => ({}));
+          const result = await handleSetOperatorVerification(opId, body, registrar, env);
+          return addCors(jsonResponse(result.status, result.body));
+        }
       }
 
       // 404

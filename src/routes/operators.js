@@ -198,6 +198,86 @@ export async function handleCheckDomain(body, registrar, env) {
   };
 }
 
+/**
+ * POST /operators/:id/verification — registrar-attested identity verification.
+ *
+ * Called by a registrar (e.g. kipple-registrar / AXIS Prime signup) after an
+ * operator completes the Verified Identity flow on its side (one-time payment
+ * + Stripe Identity KYC). The registrar vouches for the result; the registry
+ * records the verified tier and raises the enforced agent cap. The registry is
+ * where caps are actually enforced (POST /register reads agent_slots.max_agents),
+ * so this is the handoff that makes a Verified Identity upgrade real.
+ *
+ * BOLA-scoped: a registrar may only attest verification for its own operators.
+ *
+ * Body: { max_agents?: number (default 1000) | null (unlimited), provider?: string }
+ *
+ * Vocab note: the operators.verification_tier CHECK allows
+ * email|domain|kyb_individual|kyb_organization. "Verified Identity" (individual
+ * KYC) maps to kyb_individual here; the registrar-side label ("verified") is a
+ * separate vocabulary, and unifying the two is a tracked follow-up.
+ */
+export async function handleSetOperatorVerification(operatorId, body, registrar, env) {
+  if (!registrar) {
+    return { status: 401, body: { error: { code: 'unauthorized', message: 'Valid registrar API key required' } } };
+  }
+
+  const operator = await env.DB.prepare(
+    'SELECT id, registrar_id, status FROM operators WHERE id = ?'
+  ).bind(operatorId).first();
+  if (!operator) {
+    return { status: 404, body: { error: { code: 'not_found', message: 'Operator not found' } } };
+  }
+  // BOLA: a registrar may only attest verification for its own operators.
+  if (operator.registrar_id !== registrar.id) {
+    return { status: 403, body: { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } } };
+  }
+
+  // max_agents: integer in [1, 1_000_000], or null for unlimited. Default 1000
+  // (the Verified Identity cap).
+  let maxAgents = 1000;
+  if (body && body.max_agents !== undefined) {
+    if (body.max_agents === null) {
+      maxAgents = null;
+    } else if (typeof body.max_agents === 'number' && Number.isFinite(body.max_agents)) {
+      maxAgents = Math.max(1, Math.min(Math.floor(body.max_agents), 1000000));
+    } else {
+      return { status: 400, body: { error: { code: 'invalid_request', message: 'max_agents must be a number or null' } } };
+    }
+  }
+  const provider = (body && typeof body.provider === 'string') ? body.provider.slice(0, 64) : 'stripe_identity';
+  const now = new Date().toISOString();
+
+  // Mark the operator individually KYB-verified. 'kyb_individual' is the
+  // registry's canonical value for a verified individual; the CHECK constraint
+  // does not permit a bare 'verified'.
+  await env.DB.prepare(
+    `UPDATE operators
+     SET verification_tier = 'kyb_individual', kyb_verified = 1, kyb_verified_at = ?,
+         kyb_provider = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(now, provider, now, operatorId).run();
+
+  // Raise the enforced cap. Upsert so a missing agent_slots row is created;
+  // on an existing row, only max_agents changes (free/used/paid are preserved).
+  await env.DB.prepare(
+    `INSERT INTO agent_slots (operator_id, free_slots_total, max_agents)
+     VALUES (?, 0, ?)
+     ON CONFLICT(operator_id) DO UPDATE SET max_agents = excluded.max_agents`
+  ).bind(operatorId, maxAgents).run();
+
+  return {
+    status: 200,
+    body: {
+      operator_id: operatorId,
+      verification_tier: 'kyb_individual',
+      kyb_verified: true,
+      max_agents: maxAgents,
+      provider
+    }
+  };
+}
+
 // M6: defense-in-depth on outbound fetches from the verifier. The Workers
 // runtime already blocks RFC1918 / link-local, so SSRF blast radius is
 // bounded — these checks ensure callers can't smuggle nonsense into the
