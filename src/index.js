@@ -218,7 +218,7 @@ export default {
         const registryBase = env.REGISTRY_BASE_URL || 'https://registry.axisprime.ai';
 
         const response = {
-          axis_version: '0.1',
+          axis_version: '0.2',
           operator_id: operator.id,
           public_key: operator.public_key || null,
           key_algorithm: operator.public_key ? 'Ed25519' : null,
@@ -524,7 +524,7 @@ export default {
           'SELECT verification_tier, domain FROM operators WHERE id = ?'
         ).bind(agent.operator_id).first();
         return addCors(jsonResponse(200, {
-          axis_version: '0.1',
+          axis_version: '0.2',
           agent_id: agent.axis_id,
           did: agent.did,
           operator_id: agent.operator_id,

@@ -135,11 +135,17 @@ export async function handleResolve(did, env) {
   return {
     status: 200,
     body: {
-      // Top-level canonical operator_id, matching /verify and /agents/:id.
-      // The axis-comments worker enforces operator_id agreement across
-      // endpoints as defense in depth; without it here, /resolve drifts from
-      // the other resolution surfaces. DB column stays bare; canonicalized at
-      // the response boundary.
+      // Top-level canonical DID + operator_id, matching /verify and /agents/:id.
+      // `did` is the agent's CANONICAL (v0.2) form regardless of which form was
+      // requested, so cross-form resolution (§12.3 — resolving a v0.1 form of a
+      // v0.2 agent) surfaces a stable `did` and both forms resolve to the same
+      // record. The W3C DID document's id carries it too; this top-level field
+      // is the AXIS-native convenience consumers expect.
+      did: agent.did,
+      // operator_id in canonical `axis:<slug>:operator` form. The axis-comments
+      // worker enforces operator_id agreement across endpoints as defense in
+      // depth; without it here /resolve drifts from the other resolution
+      // surfaces. DB column stays bare; canonicalized at the response boundary.
       operator_id: `axis:${agent.operator_id}:operator`,
       didResolutionMetadata,
       didDocument,
@@ -215,7 +221,7 @@ function buildAgentRecord(agent, operator, includePresentation, env) {
   // Public layer — always returned, no authentication required.
   // Contains only what is necessary for cryptographic verification.
   const record = {
-    axis_version: '0.1',
+    axis_version: '0.2',
     agent_id: agent.axis_id,
     did: agent.did,
     // operator_id is returned in canonical `axis:<slug>:operator` form,
