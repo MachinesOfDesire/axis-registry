@@ -9,7 +9,7 @@
 
 import { findAgent } from './resolve.js';
 import { generateCredentialId } from '../utils/crypto.js';
-import { validateScopeSet, isScopeSubset } from '../utils/scope.js';
+import { validateScopeSet, isScopeSubset, intersectScopes } from '../utils/scope.js';
 import { verifyDelegationProof } from '../utils/proof.js';
 import { parseAxisDid } from '../utils/did.js';
 
@@ -59,6 +59,14 @@ export async function resolveIssuerPublicKey(issuedBy, env) {
 // 90 days is the launch default; once tier-aware policy lands, KYB tiers
 // should be allowed a longer ceiling (e.g. 365 days). For now: one number.
 const MAX_DELEGATION_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
+
+// Cap on the stored signed DelegationCredential document. A DC is a small,
+// structured credential (§4.4) — typically well under 1 KB; 8 KB is a generous
+// ceiling. Bounding it keeps the registry from being used as arbitrary
+// document storage and turns an oversized submission into a clean 400 rather
+// than an opaque D1 INSERT failure (500). Only the signed-submission path
+// stores a document, so the cap applies there.
+const MAX_SIGNED_DC_BYTES = 8192;
 
 export async function handleGetDelegation(delegationId, env) {
   const delegation = await env.DB.prepare(
@@ -193,6 +201,80 @@ export async function handleVerifyChain(agentIdentifier, env) {
       rootOperator: rootOperatorInfo,
       verifiedAt: new Date().toISOString()
     }
+  };
+}
+
+// Depth cap for resolving a chain upward from a credential id (mirrors the
+// cascade cap and the spec's depth-16 guidance).
+const CHAIN_RESOLVE_MAX_DEPTH = 16;
+
+/**
+ * Resolve a delegation chain UPWARD from a specific credential id (the form an
+ * AIT's `dlg` claim points at, §4.3), walking `parent_credential_id` to the
+ * root. Verifies each DC's proof, status, expiry, and root-operator
+ * consistency, and computes the chain's effective scope (intersection from
+ * root to leaf, §4.4). Proof failures fail the chain only when DC-proof
+ * enforcement is enabled, so legacy/unsigned chains still resolve (with
+ * signatureValid:false) until enforcement is turned on.
+ *
+ * Returns { resolved, valid, depth, effective_scope, root_operator, chain }.
+ */
+export async function resolveChainFromCredential(credentialId, env) {
+  const enforce = dcProofsEnforced(env);
+  const links = [];
+  const visited = new Set();
+  let currentId = credentialId;
+  let valid = true;
+  let rootOperator = null;
+  const now = new Date();
+
+  while (currentId && links.length < CHAIN_RESOLVE_MAX_DEPTH) {
+    if (visited.has(currentId)) { valid = false; break; }
+    visited.add(currentId);
+
+    const dc = await env.DB.prepare('SELECT * FROM delegations WHERE id = ?').bind(currentId).first();
+    if (!dc) { valid = false; break; } // dangling parent reference
+
+    if (dc.status !== 'active') valid = false;
+    if (new Date(dc.expires_at) < now) valid = false;
+    if (dc.created_at && new Date(dc.created_at) > now) valid = false;
+
+    if (rootOperator === null) rootOperator = dc.root_operator;
+    else if (dc.root_operator !== rootOperator) valid = false;
+
+    let signatureValid = false;
+    if (dc.signed_document) {
+      const issuerKey = await resolveIssuerPublicKey(dc.issued_by, env);
+      if (issuerKey) {
+        signatureValid = (await verifyDelegationProof(dc.signed_document, issuerKey)).valid;
+      }
+    }
+    if (enforce && !signatureValid) valid = false;
+
+    links.push({
+      delegation: dc.id,
+      from: dc.issued_by,
+      to: dc.issued_to,
+      scope: JSON.parse(dc.scope),
+      signatureValid,
+      status: dc.status,
+    });
+    currentId = dc.parent_credential_id;
+  }
+
+  // Effective scope: intersect from root-most to leaf-most (links are leaf-first).
+  let effective = null;
+  for (const link of [...links].reverse()) {
+    effective = effective === null ? link.scope : intersectScopes(effective, link.scope);
+  }
+
+  return {
+    resolved: links.length > 0,
+    valid: links.length > 0 && valid,
+    depth: links.length,
+    effective_scope: effective || [],
+    root_operator: rootOperator,
+    chain: links,
   };
 }
 
@@ -375,6 +457,16 @@ export async function handleCreateDelegation(body, registrar, env) {
   let signedDocument = null;
 
   if (signed) {
+    // Bound the stored document before doing anything expensive. Fail fast and
+    // explicitly rather than letting an oversized doc surface as a D1 500.
+    const candidateDoc = JSON.stringify(body);
+    if (candidateDoc.length > MAX_SIGNED_DC_BYTES) {
+      return {
+        status: 400,
+        body: { error: { code: 'document_too_large', message: `Signed delegation document exceeds the ${MAX_SIGNED_DC_BYTES}-byte limit.` } }
+      };
+    }
+
     // Verify the issuer's proof over the JCS-canonicalized document minus proof
     // (§8 Step 3) BEFORE persisting anything. The issuer chose `id`/`created`,
     // so honor them and store the document verbatim for re-verification.
@@ -401,7 +493,7 @@ export async function handleCreateDelegation(body, registrar, env) {
 
     credentialId = body.id;
     createdAt = body.created;
-    signedDocument = JSON.stringify(body);
+    signedDocument = candidateDoc;
 
     // Issuer-chosen id must be unique.
     const collision = await env.DB.prepare('SELECT 1 FROM delegations WHERE id = ?').bind(credentialId).first();
