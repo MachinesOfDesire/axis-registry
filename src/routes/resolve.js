@@ -115,6 +115,23 @@ export async function handleResolve(did, env) {
   const didDocument = buildDIDDocument(agent);
   const duration = Date.now() - startTime;
 
+  // v0.3 §10.3: v0.1 DID forms (`did:axis:{registry}:{agent}`) are resolve-only
+  // and deprecated — they still resolve, but new registrations only emit the
+  // v0.2 operator-namespaced form. If the CALLER requested a v0.1-form DID,
+  // surface a non-fatal deprecation warning in the resolution metadata so
+  // consumers can migrate to the agent's canonical (v0.2) DID.
+  const requestedForm = parseAxisDid(did);
+  const didResolutionMetadata = {
+    contentType: 'application/did+ld+json',
+    duration
+  };
+  if (requestedForm && requestedForm.form === 'v0.1') {
+    didResolutionMetadata.warnings = [{
+      type: 'DEPRECATED_DID_FORM',
+      message: 'v0.1 DID form is deprecated and resolve-only; use the canonical v0.2 DID returned in didDocument.id.'
+    }];
+  }
+
   return {
     status: 200,
     body: {
@@ -124,10 +141,7 @@ export async function handleResolve(did, env) {
       // the other resolution surfaces. DB column stays bare; canonicalized at
       // the response boundary.
       operator_id: `axis:${agent.operator_id}:operator`,
-      didResolutionMetadata: {
-        contentType: 'application/did+ld+json',
-        duration
-      },
+      didResolutionMetadata,
       didDocument,
       didDocumentMetadata: {
         created: agent.created_at,
