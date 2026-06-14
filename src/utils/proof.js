@@ -75,3 +75,39 @@ export async function verifyCanonicalProof({ payload, proofValue, proofType, pub
   // Unrecognized proofType — reject distinctly.
   return { valid: false, mode: 'none', unsupported: true, proofType };
 }
+
+/**
+ * Verify a signed DelegationCredential document (Option A, v0.2 §4.4 / §8).
+ *
+ * The issuer signs the JCS canonicalization of the complete DC document MINUS
+ * its `proof` field. The DC proof envelope uses the W3C Data Integrity shape
+ * (`type`, `verificationMethod`, `proofValue`); §6.1 makes JCS the v0.2
+ * canonicalization for the delegation envelope, so we read `proof.proofType`
+ * (when present, e.g. "jcs-eddsa-2026") and otherwise treat it as the legacy
+ * regime (JCS attempted first per §6.1).
+ *
+ * @param {string|object} signedDocument  Raw signed DC (JSON string or object), proof field included.
+ * @param {string} issuerPublicKey        The issuer's Ed25519 public key.
+ * @returns {Promise<{valid:boolean, mode:string, unsupported?:boolean, proofType?:string}>}
+ */
+export async function verifyDelegationProof(signedDocument, issuerPublicKey) {
+  if (!signedDocument || !issuerPublicKey) return { valid: false, mode: 'none' };
+  let doc;
+  try {
+    doc = typeof signedDocument === 'string' ? JSON.parse(signedDocument) : signedDocument;
+  } catch {
+    return { valid: false, mode: 'none' };
+  }
+  const proof = doc && doc.proof;
+  if (!proof || !proof.proofValue) return { valid: false, mode: 'none' };
+
+  const payload = { ...doc };
+  delete payload.proof;
+
+  return verifyCanonicalProof({
+    payload,
+    proofValue: proof.proofValue,
+    proofType: proof.proofType, // usually undefined for DCs → legacy(JCS-first) regime
+    publicKey: issuerPublicKey,
+  });
+}

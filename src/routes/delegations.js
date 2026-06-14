@@ -10,6 +10,49 @@
 import { findAgent } from './resolve.js';
 import { generateCredentialId } from '../utils/crypto.js';
 import { validateScopeSet, isScopeSubset } from '../utils/scope.js';
+import { verifyDelegationProof } from '../utils/proof.js';
+import { parseAxisDid } from '../utils/did.js';
+
+/** Is DC-proof enforcement enabled? Off by default so legacy/unsigned
+ * delegations (and the keyless operator-helper demo) keep working until the
+ * signed-DC contract is live-verified and explicitly enabled. */
+function dcProofsEnforced(env) {
+  return env && env.AXIS_ENFORCE_DC_PROOFS === 'true';
+}
+
+/**
+ * Resolve the Ed25519 public key of a delegation issuer (§8 Step 3: "operator's
+ * key if `issued_by` is the operator; delegating agent's key otherwise").
+ * Returns the base64url/multibase public key string, or null if unresolvable.
+ */
+export async function resolveIssuerPublicKey(issuedBy, env) {
+  if (typeof issuedBy !== 'string' || !issuedBy) return null;
+
+  // Operator form: `axis:{op}:operator`. Check this BEFORE agent lookup so an
+  // agent that happens to be slugged "operator" can't shadow the operator key.
+  const parts = issuedBy.split(':');
+  if (parts.length === 3 && parts[0] === 'axis' && parts[2] === 'operator') {
+    const op = await env.DB.prepare('SELECT public_key FROM operators WHERE id = ?').bind(parts[1]).first();
+    return op && op.public_key ? op.public_key : null;
+  }
+
+  // Agent form: AXIS ID / DID / bare slug — findAgent handles all of them.
+  const agent = await findAgent(issuedBy, env);
+  if (agent && agent.public_key) return agent.public_key;
+
+  // Operator via a DID's operator segment, or a bare operator id.
+  let opId = null;
+  if (issuedBy.startsWith('did:axis:')) {
+    opId = parseAxisDid(issuedBy)?.operator || null;
+  } else if (!issuedBy.includes(':')) {
+    opId = issuedBy;
+  }
+  if (opId) {
+    const op = await env.DB.prepare('SELECT public_key FROM operators WHERE id = ?').bind(opId).first();
+    if (op && op.public_key) return op.public_key;
+  }
+  return null;
+}
 
 // M5: cap on how far in the future a delegation's `expires` can sit.
 // Defeats the "100-year delegation" pattern that destroys revocation hygiene.
@@ -52,6 +95,7 @@ export async function handleVerifyChain(agentIdentifier, env) {
   let chainValid = true;
   let rootOperator = null;
   const visited = new Set();
+  const enforce = dcProofsEnforced(env);
 
   while (true) {
     // Find delegation where issued_to is the current agent
@@ -95,12 +139,28 @@ export async function handleVerifyChain(agentIdentifier, env) {
       chainValid = false;
     }
 
+    // Verify the DC's cryptographic proof (§8 Step 3). Signature is valid only
+    // when the credential carries a stored issuer-signed document whose proof
+    // verifies against the issuer's resolved public key. Legacy/unsigned rows
+    // (no signed_document) report signatureValid:false truthfully. Whether an
+    // invalid/absent signature fails the whole chain is gated by enforcement so
+    // pre-signed-contract delegations keep resolving until enforcement is on.
+    let signatureValid = false;
+    if (delegation.signed_document) {
+      const issuerKey = await resolveIssuerPublicKey(delegation.issued_by, env);
+      if (issuerKey) {
+        const proofResult = await verifyDelegationProof(delegation.signed_document, issuerKey);
+        signatureValid = proofResult.valid;
+      }
+    }
+    if (enforce && !signatureValid) chainValid = false;
+
     chain.push({
       delegation: delegation.id,
       from: delegation.issued_by,
       to: delegation.issued_to,
       scope: scope,
-      signatureValid: true, // TODO: actual signature verification
+      signatureValid,
       expired,
       status: delegation.status
     });
@@ -147,6 +207,26 @@ export async function handleCreateDelegation(body, registrar, env) {
     return {
       status: 400,
       body: { error: { code: 'invalid_request', message: 'Missing required fields: issued_by, issued_to, root_operator, scope, expires' } }
+    };
+  }
+
+  // Option A (v0.2 §4.4): a "signed submission" carries a complete issuer-signed
+  // DC document — proof.proofValue plus the issuer-chosen `id` and `created`.
+  // The registry verifies and stores it verbatim. The legacy convenience path
+  // (registry-generated id/created, no real proof) remains for back-compat but
+  // is refused when DC-proof enforcement is on.
+  const signed = Boolean(body.proof && body.proof.proofValue);
+  const enforce = dcProofsEnforced(env);
+  if (!signed && enforce) {
+    return {
+      status: 400,
+      body: { error: { code: 'proof_required', message: 'DC-proof enforcement is enabled: submit a signed DelegationCredential (id, created, proof.proofValue over the JCS-canonicalized document).' } }
+    };
+  }
+  if (signed && (!body.id || !body.created)) {
+    return {
+      status: 400,
+      body: { error: { code: 'invalid_request', message: 'A signed delegation must include issuer-chosen `id` and `created` (they are covered by the proof).' } }
     };
   }
 
@@ -276,23 +356,71 @@ export async function handleCreateDelegation(body, registrar, env) {
           body: { error: { code: 'delegation_chain_invalid', message: 'Parent credential does not allow further sub-delegation (max_sub_delegation_depth = 0)' } }
         };
       }
-      // Decrement depth for the new credential
-      if (!constraints) body.constraints = {};
-      if (!constraints?.max_sub_delegation_depth) {
-        body.constraints = { ...constraints, max_sub_delegation_depth: parentConstraints.max_sub_delegation_depth - 1 };
+      // Decrement depth for the new credential. ONLY on the legacy path — a
+      // signed submission's constraints are covered by the issuer's proof, so
+      // the registry must not mutate them (the issuer is responsible for
+      // setting the correct depth in the document it signed).
+      if (!signed) {
+        if (!constraints) body.constraints = {};
+        if (!constraints?.max_sub_delegation_depth) {
+          body.constraints = { ...constraints, max_sub_delegation_depth: parentConstraints.max_sub_delegation_depth - 1 };
+        }
       }
     }
   }
 
-  // Generate credential ID
-  const namespace = issued_by.split(':')[1] || 'prime';
-  const credentialId = generateCredentialId('dc', namespace);
+  // Determine credential id + created timestamp + signed-document storage.
+  let credentialId;
+  let createdAt;
+  let signedDocument = null;
 
-  const now = new Date().toISOString();
+  if (signed) {
+    // Verify the issuer's proof over the JCS-canonicalized document minus proof
+    // (§8 Step 3) BEFORE persisting anything. The issuer chose `id`/`created`,
+    // so honor them and store the document verbatim for re-verification.
+    const issuerKey = await resolveIssuerPublicKey(issued_by, env);
+    if (!issuerKey) {
+      return {
+        status: 400,
+        body: { error: { code: 'issuer_key_unavailable', message: 'Cannot resolve a public key for issued_by; a signed delegation requires the issuer to have a registered Ed25519 key.' } }
+      };
+    }
+    const proofResult = await verifyDelegationProof(body, issuerKey);
+    if (proofResult.unsupported) {
+      return {
+        status: 400,
+        body: { error: { code: 'unsupported_proof_type', message: `Unrecognized delegation proof type: ${proofResult.proofType}.` } }
+      };
+    }
+    if (!proofResult.valid) {
+      return {
+        status: 400,
+        body: { error: { code: 'invalid_proof', message: 'Delegation proof verification failed against the issuer public key.' } }
+      };
+    }
+
+    credentialId = body.id;
+    createdAt = body.created;
+    signedDocument = JSON.stringify(body);
+
+    // Issuer-chosen id must be unique.
+    const collision = await env.DB.prepare('SELECT 1 FROM delegations WHERE id = ?').bind(credentialId).first();
+    if (collision) {
+      return {
+        status: 409,
+        body: { error: { code: 'delegation_already_exists', message: 'A delegation with this id already exists' } }
+      };
+    }
+  } else {
+    // Legacy convenience path: registry generates the id + created timestamp.
+    const namespace = issued_by.split(':')[1] || 'prime';
+    credentialId = generateCredentialId('dc', namespace);
+    createdAt = new Date().toISOString();
+  }
 
   await env.DB.prepare(
-    `INSERT INTO delegations (id, issued_by, issued_to, root_operator, parent_credential_id, scope, constraints, created_at, expires_at, revocable, status, proof, registrar_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+    `INSERT INTO delegations (id, issued_by, issued_to, root_operator, parent_credential_id, scope, constraints, created_at, expires_at, revocable, status, proof, signed_document, registrar_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
   ).bind(
     credentialId,
     issued_by,
@@ -300,11 +428,16 @@ export async function handleCreateDelegation(body, registrar, env) {
     root_operator,
     parent_credential_id || null,
     JSON.stringify(scope),
-    constraints ? JSON.stringify(constraints) : null,
-    now,
+    // Signed: persist the issuer's constraints verbatim. Legacy: preserve the
+    // prior binding (the destructured `constraints`).
+    signed
+      ? (body.constraints ? JSON.stringify(body.constraints) : null)
+      : (constraints ? JSON.stringify(constraints) : null),
+    createdAt,
     expires,
     body.revocable !== false ? 1 : 0,
     body.proof ? JSON.stringify(body.proof) : '{}',
+    signedDocument,
     registrar.id
   ).run();
 

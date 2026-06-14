@@ -81,7 +81,7 @@ async function sha256Hex(input) {
  *
  * @returns {Promise<Harness>}
  */
-export async function createHarness() {
+export async function createHarness(opts = {}) {
   const schema = await loadSchema();
 
   const mf = new Miniflare({
@@ -92,6 +92,8 @@ export async function createHarness() {
     d1Databases: { DB: 'axis-registry-test' },
     bindings: {
       REGISTRY_BASE_URL: 'http://localhost',
+      // Caller-supplied bindings (e.g. AXIS_ENFORCE_DC_PROOFS) override/extend.
+      ...(opts.bindings || {}),
     },
     // Rate-limit bindings deliberately omitted; the middleware no-ops.
   });

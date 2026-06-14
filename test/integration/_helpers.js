@@ -124,6 +124,37 @@ export async function signLegacyProof(keypair, payload) {
 }
 
 /**
+ * Sign a DelegationCredential document (Option A, v0.2 §4.4): JCS over the
+ * document MINUS its `proof` field, Ed25519. `dc` is the DC document without a
+ * proof field. Returns the base64url proofValue.
+ */
+export async function signDelegation(keypair, dc) {
+  const sig = new Uint8Array(
+    await subtle.sign({ name: 'Ed25519' }, keypair.privateKey, TEXT.encode(jcsCanonicalize(dc))),
+  );
+  return b64uEncode(sig);
+}
+
+/**
+ * Build a complete signed DelegationCredential ready to POST /delegations.
+ * `dc` is the document fields without a proof; the returned object adds a v0.2
+ * Data-Integrity proof envelope (`type` + `proofType: jcs-eddsa-2026`).
+ */
+export async function buildSignedDelegation(keypair, dc) {
+  const proofValue = await signDelegation(keypair, dc);
+  return {
+    ...dc,
+    proof: {
+      type: 'Ed25519Signature2020',
+      proofType: 'jcs-eddsa-2026',
+      verificationMethod: `${dc.issued_by}#key-1`,
+      proofPurpose: 'assertionMethod',
+      proofValue,
+    },
+  };
+}
+
+/**
  * Register an agent through POST /register using a real keypair. Returns
  * `{ keypair, axisId, did, operatorId, agent: <full response body> }`.
  * Most integration tests that need a "real" agent for AIT signing should

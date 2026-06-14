@@ -1,0 +1,14 @@
+-- Migration 0006: Option A delegation proofs (v0.2 §4.4 / §8).
+--
+-- Delegation-chain proof verification requires the registry to know the exact
+-- bytes the issuer signed. Under Option A the issuer constructs the complete
+-- DelegationCredential document (including its own `id` and `created`), signs
+-- the JCS canonicalization of that document minus its `proof` field, and
+-- submits the whole signed document. We store it verbatim here so both the
+-- create-time check and the chain walk verify against the same bytes.
+--
+-- Nullable: pre-existing rows (and legacy convenience-path creates while
+-- enforcement is off) carry no signed document. The chain walk reports
+-- signatureValid=false for those and only fails the chain when DC-proof
+-- enforcement is enabled (env AXIS_ENFORCE_DC_PROOFS=true).
+ALTER TABLE delegations ADD COLUMN signed_document TEXT;
