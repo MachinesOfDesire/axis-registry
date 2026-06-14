@@ -1,0 +1,24 @@
+{
+  "axis_version": "0.3",
+  "registry_id": "prime",
+  "registry_url": "https://registry.axisprime.ai",
+  "keys": [
+    {
+      "kid": "prime-registry-2026",
+      "alg": "Ed25519",
+      "public_key": "cwCJBlPDW_MrIqvROUtTV7nBF2jWokdShunxzfxDjPs",
+      "status": "active",
+      "not_before": "2026-06-14T21:38:39Z",
+      "not_after": "2027-06-14T21:38:39Z"
+    }
+  ],
+  "endpoints": {
+    "agents": "/agents",
+    "operators": "/operators",
+    "verify": "/verify",
+    "revocation": "/revocation",
+    "delegations": "/delegations"
+  },
+  "directory_url": "https://registry.axisprime.ai/.well-known/axis-directory",
+  "signature": "dgxMbwSNI13s4oytYXjWzlf6LRRJspo3UkDS68Dd9D-ikQyN74uGMBNWPEj8YdZ5dFDp_lKypa7ppYC7c2GmAQ"
+}
