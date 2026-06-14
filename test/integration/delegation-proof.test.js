@@ -135,6 +135,19 @@ test('P0-1: with enforcement ON, an unsigned delegation is refused at create', a
   assert.equal(json.error.code, 'proof_required');
 });
 
+test('P0-1: rejects an oversized signed delegation with document_too_large', async (t) => {
+  const { harness, registrar, operator, editor, researcher } = await setup();
+  t.after(() => harness.dispose());
+
+  // Pad the document past the 8 KB cap with a large (signed) field.
+  const doc = { ...dcDoc({ editor, researcher, operator }), note: 'x'.repeat(9000) };
+  const signed = await buildSignedDelegation(editor.keypair, doc);
+  const res = await postDelegation(harness, registrar, signed);
+  assert.equal(res.status, 400);
+  const json = await res.json();
+  assert.equal(json.error.code, 'document_too_large');
+});
+
 test('P0-1: with enforcement ON, a valid signed delegation is accepted and chain is valid', async (t) => {
   const { harness, registrar, operator, editor, researcher } = await setup({
     bindings: { AXIS_ENFORCE_DC_PROOFS: 'true' },

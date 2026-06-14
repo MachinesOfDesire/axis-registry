@@ -60,6 +60,14 @@ export async function resolveIssuerPublicKey(issuedBy, env) {
 // should be allowed a longer ceiling (e.g. 365 days). For now: one number.
 const MAX_DELEGATION_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 
+// Cap on the stored signed DelegationCredential document. A DC is a small,
+// structured credential (§4.4) — typically well under 1 KB; 8 KB is a generous
+// ceiling. Bounding it keeps the registry from being used as arbitrary
+// document storage and turns an oversized submission into a clean 400 rather
+// than an opaque D1 INSERT failure (500). Only the signed-submission path
+// stores a document, so the cap applies there.
+const MAX_SIGNED_DC_BYTES = 8192;
+
 export async function handleGetDelegation(delegationId, env) {
   const delegation = await env.DB.prepare(
     'SELECT * FROM delegations WHERE id = ?'
@@ -375,6 +383,16 @@ export async function handleCreateDelegation(body, registrar, env) {
   let signedDocument = null;
 
   if (signed) {
+    // Bound the stored document before doing anything expensive. Fail fast and
+    // explicitly rather than letting an oversized doc surface as a D1 500.
+    const candidateDoc = JSON.stringify(body);
+    if (candidateDoc.length > MAX_SIGNED_DC_BYTES) {
+      return {
+        status: 400,
+        body: { error: { code: 'document_too_large', message: `Signed delegation document exceeds the ${MAX_SIGNED_DC_BYTES}-byte limit.` } }
+      };
+    }
+
     // Verify the issuer's proof over the JCS-canonicalized document minus proof
     // (§8 Step 3) BEFORE persisting anything. The issuer chose `id`/`created`,
     // so honor them and store the document verbatim for re-verification.
@@ -401,7 +419,7 @@ export async function handleCreateDelegation(body, registrar, env) {
 
     credentialId = body.id;
     createdAt = body.created;
-    signedDocument = JSON.stringify(body);
+    signedDocument = candidateDoc;
 
     // Issuer-chosen id must be unique.
     const collision = await env.DB.prepare('SELECT 1 FROM delegations WHERE id = ?').bind(credentialId).first();
