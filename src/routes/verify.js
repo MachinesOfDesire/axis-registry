@@ -148,6 +148,12 @@ export async function handleVerifyAIT(token, env) {
     // The payload's `iss` carries the agent id; the agent's operator linkage
     // is fixed at registration. Return canonical `axis:{slug}:operator` form
     // so consumers (comments workers, audit pipelines) can rely on it.
+    // v0.2 §4.3: the delegation the agent is acting under is carried in the
+    // `dlg` claim (credential_id). v0.1 drafts used `delegation_id`; accept it
+    // as a fallback so legacy tokens still resolve. Surface both keys: `dlg`
+    // is canonical, `delegation_id` is retained for existing consumers
+    // (Governor, comments worker) until they migrate.
+    const dlg = payload.dlg || payload.delegation_id || null;
     return {
       status: 200,
       body: {
@@ -156,7 +162,8 @@ export async function handleVerifyAIT(token, env) {
         operator_id: `axis:${agent.operator_id}:operator`,
         status: agent.status,
         expires_at: payload.exp ? new Date(payload.exp * 1000).toISOString() : null,
-        delegation_id: payload.delegation_id || null,
+        dlg,
+        delegation_id: dlg,
         scope: payload.scope || null
       }
     };

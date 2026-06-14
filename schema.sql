@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS delegations (
   revoked_at TEXT,
   revocation_reason TEXT,
   proof TEXT NOT NULL,                          -- JSON proof object (signature)
+  signed_document TEXT,                         -- raw issuer-signed DC doc (Option A, v0.2 §4.4); null for legacy/unsigned rows
   registrar_id TEXT NOT NULL,
   FOREIGN KEY (parent_credential_id) REFERENCES delegations(id),
   FOREIGN KEY (registrar_id) REFERENCES registrars(id)

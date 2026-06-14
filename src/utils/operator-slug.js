@@ -17,8 +17,8 @@
  *                            "kipple-labs.com"      → "kipple-labs"
  *                            "example.co.uk"        → "example-co"   (PSL TODO)
  *
- *   email               opaque `op-<24hex>`
- *   kyb_individual      opaque `op-<24hex>`        (never derive from name)
+ *   email               opaque `op-<24 hex>`       (12 random bytes)
+ *   kyb_individual      opaque `op-<24 hex>`       (never derive from name)
  *
  *   kyb_organization    verified domain if present (same as domain tier),
  *                       else opaque `op-<24hex>`
@@ -56,12 +56,15 @@ export function deriveDomainSlug(domain) {
 }
 
 /**
- * Generate a fresh opaque operator slug (`op-` + 12 hex chars).
- * Used for email-tier, kyb_individual, and as the fallback for
- * kyb_organization when no verified domain is on file.
+ * Generate a fresh opaque operator slug: `op-` followed by 24 hex chars.
+ * generateToken(n) returns n random BYTES hex-encoded, so generateToken(12)
+ * yields 24 hex characters (96 bits of entropy) — NOT 12 chars. Do not
+ * "shorten" this to generateToken(6) or expand it to generateToken(24); the
+ * canonical opaque slug is 24 hex chars. Used for email-tier, kyb_individual,
+ * and as the fallback for kyb_organization when no verified domain is on file.
  */
 export function generateOpaqueOperatorSlug() {
-  return 'op-' + generateToken(12);
+  return 'op-' + generateToken(12); // 12 bytes → 24 hex chars
 }
 
 /**

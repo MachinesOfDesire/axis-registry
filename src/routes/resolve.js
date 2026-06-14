@@ -118,6 +118,12 @@ export async function handleResolve(did, env) {
   return {
     status: 200,
     body: {
+      // Top-level canonical operator_id, matching /verify and /agents/:id.
+      // The axis-comments worker enforces operator_id agreement across
+      // endpoints as defense in depth; without it here, /resolve drifts from
+      // the other resolution surfaces. DB column stays bare; canonicalized at
+      // the response boundary.
+      operator_id: `axis:${agent.operator_id}:operator`,
       didResolutionMetadata: {
         contentType: 'application/did+ld+json',
         duration

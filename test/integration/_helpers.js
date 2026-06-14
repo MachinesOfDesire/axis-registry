@@ -16,6 +16,7 @@
  */
 
 import { Buffer } from 'node:buffer';
+import { jcsCanonicalize } from '../../src/utils/jcs.js';
 
 const { subtle } = globalThis.crypto;
 const TEXT = new TextEncoder();
@@ -95,6 +96,62 @@ export async function signAITThenTamper(keypair, payload, tamperedPayload) {
   const realToken = await signAIT(keypair, payload);
   const [headerB64, , sigB64] = realToken.split('.');
   return `${headerB64}.${b64uEncodeJSON(tamperedPayload)}.${sigB64}`;
+}
+
+/**
+ * Sign `payload` with the v0.2 JCS scheme (RFC 8785). Returns the base64url
+ * Ed25519 signature for `proof.proofValue` alongside `proofType:
+ * "jcs-eddsa-2026"`. Reuses the registry's own canonicalizer so the bytes
+ * signed here are exactly the bytes the registry verifies.
+ */
+export async function signJcsProof(keypair, payload) {
+  const sig = new Uint8Array(
+    await subtle.sign({ name: 'Ed25519' }, keypair.privateKey, TEXT.encode(jcsCanonicalize(payload))),
+  );
+  return b64uEncode(sig);
+}
+
+/**
+ * Sign `payload` with the legacy v0.1 top-level-sort scheme. Used to prove the
+ * registry still accepts legacy proofs when proofType is absent (back-compat).
+ */
+export async function signLegacyProof(keypair, payload) {
+  const canonical = JSON.stringify(payload, Object.keys(payload).sort());
+  const sig = new Uint8Array(
+    await subtle.sign({ name: 'Ed25519' }, keypair.privateKey, TEXT.encode(canonical)),
+  );
+  return b64uEncode(sig);
+}
+
+/**
+ * Sign a DelegationCredential document (Option A, v0.2 §4.4): JCS over the
+ * document MINUS its `proof` field, Ed25519. `dc` is the DC document without a
+ * proof field. Returns the base64url proofValue.
+ */
+export async function signDelegation(keypair, dc) {
+  const sig = new Uint8Array(
+    await subtle.sign({ name: 'Ed25519' }, keypair.privateKey, TEXT.encode(jcsCanonicalize(dc))),
+  );
+  return b64uEncode(sig);
+}
+
+/**
+ * Build a complete signed DelegationCredential ready to POST /delegations.
+ * `dc` is the document fields without a proof; the returned object adds a v0.2
+ * Data-Integrity proof envelope (`type` + `proofType: jcs-eddsa-2026`).
+ */
+export async function buildSignedDelegation(keypair, dc) {
+  const proofValue = await signDelegation(keypair, dc);
+  return {
+    ...dc,
+    proof: {
+      type: 'Ed25519Signature2020',
+      proofType: 'jcs-eddsa-2026',
+      verificationMethod: `${dc.issued_by}#key-1`,
+      proofPurpose: 'assertionMethod',
+      proofValue,
+    },
+  };
 }
 
 /**
