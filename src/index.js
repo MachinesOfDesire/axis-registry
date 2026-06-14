@@ -17,6 +17,7 @@ import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from 
 import { corsHeaders, handleOptions } from './middleware/cors.js';
 import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit.js';
 import { logAudit } from './utils/audit.js';
+import { STANDARD_VOCABULARY } from './utils/scope-vocab.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -81,6 +82,32 @@ export default {
           },
           updated_at: '2026-06-14T00:00:00Z'
         }));
+      }
+
+      // GET /.well-known/axis-scopes — Standard scope vocabulary discovery.
+      // v0.3 §4.5 (CANDIDATE — unratified): publishes the standard scope
+      // vocabulary so interoperating parties can agree on scope meaning. The
+      // vocabulary seed lives in src/utils/scope-vocab.js. `platform_id` is
+      // derived from REGISTRY_BASE_URL exactly as axis-access does. Public,
+      // no auth, edge-cacheable like other public reads.
+      if (method === 'GET' && path === '/.well-known/axis-scopes') {
+        const registryBase = env.REGISTRY_BASE_URL || 'https://registry.axisprime.ai';
+        const platformId = registryBase.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        // Flatten the by-domain vocabulary into one entry per standard scope,
+        // preserving domain + insertion order for stable output.
+        const scopes = Object.values(STANDARD_VOCABULARY).flatMap((domain) =>
+          Object.entries(domain).map(([scope, description]) => ({
+            scope,
+            standard: true,
+            description,
+          }))
+        );
+        return addCors(jsonResponse(200, {
+          axis_version: '0.3',
+          platform_id: platformId,
+          scopes,
+          updated_at: '2026-06-14T00:00:00Z'
+        }, publicReadCacheHeaders(request)));
       }
 
       // GET /agents?operator_id= — List agents for an operator.
@@ -653,9 +680,10 @@ function publicReadCacheHeaders(request) {
  * (REGISTRAR / AUTH_FAIL) wins over PUBLIC_READ.
  */
 async function pickRateLimitTier(method, path, registrar, request) {
-  // Skip preflights and the well-known health endpoint.
+  // Skip preflights and the well-known health/discovery endpoints.
   if (method === 'OPTIONS') return null;
   if (path === '/.well-known/axis-access') return null;
+  if (path === '/.well-known/axis-scopes') return null;
 
   const mutating = ['POST', 'PATCH', 'DELETE'].includes(method);
 
