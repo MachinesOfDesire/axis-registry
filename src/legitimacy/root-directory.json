@@ -1,0 +1,18 @@
+{
+  "axis_version": "0.3",
+  "directory_version": 1,
+  "issued_at": "2026-06-14T21:38:39Z",
+  "expires_at": "2027-06-14T21:38:39Z",
+  "registrars": [
+    {
+      "registry_id": "prime",
+      "registry_url": "https://registry.axisprime.ai",
+      "key_fingerprints": [
+        "82a529b5e13cccac8e0ca25fad05b138b19a32ef9ea2736ed17f5c1f1c6843a9"
+      ],
+      "status": "certified",
+      "certified_at": "2026-06-14T21:38:39Z"
+    }
+  ],
+  "root_signature": "-hW77zrpZe_QkWfTZjSf9uvm5jviefGMVQ-1o-WavH6qENer9DE0kjHNNc37Kg63QvfRO2rFfe55iR7NyeoSBA"
+}

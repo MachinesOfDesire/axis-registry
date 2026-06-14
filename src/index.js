@@ -18,6 +18,7 @@ import { corsHeaders, handleOptions } from './middleware/cors.js';
 import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit.js';
 import { logAudit } from './utils/audit.js';
 import { STANDARD_VOCABULARY } from './utils/scope-vocab.js';
+import { REGISTRY_MANIFEST, ROOT_DIRECTORY } from './legitimacy/artifacts.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -115,6 +116,22 @@ export default {
           scopes,
           updated_at: '2026-06-14T00:00:00Z'
         }, publicReadCacheHeaders(request)));
+      }
+
+      // GET /.well-known/axis-registry — registry self-manifest (v0.3 candidate
+      // C §1). A static, registry-signed artifact (signed by the registry-
+      // signing key; see src/legitimacy/artifacts.js + scripts/sign-legitimacy-
+      // artifacts.mjs). Public, edge-cacheable.
+      if (method === 'GET' && path === '/.well-known/axis-registry') {
+        return addCors(jsonResponse(200, REGISTRY_MANIFEST, publicReadCacheHeaders(request)));
+      }
+
+      // GET /.well-known/axis-directory — AXIS Prime's signed root directory of
+      // certified registrars (v0.3 candidate C §1). Signed by the Prime ROOT
+      // key; verifiers pin the root public key and check this directory before
+      // trusting any registry's records. Public, edge-cacheable.
+      if (method === 'GET' && path === '/.well-known/axis-directory') {
+        return addCors(jsonResponse(200, ROOT_DIRECTORY, publicReadCacheHeaders(request)));
       }
 
       // GET /agents?operator_id= — List agents for an operator.
@@ -691,6 +708,8 @@ async function pickRateLimitTier(method, path, registrar, request) {
   if (method === 'OPTIONS') return null;
   if (path === '/.well-known/axis-access') return null;
   if (path === '/.well-known/axis-scopes') return null;
+  if (path === '/.well-known/axis-registry') return null;
+  if (path === '/.well-known/axis-directory') return null;
 
   const mutating = ['POST', 'PATCH', 'DELETE'].includes(method);
 
