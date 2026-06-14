@@ -7,6 +7,7 @@
 
 import { deriveAgentId, verifyEd25519Signature, generateToken, base64urlToBytes, bytesToBase58 } from '../utils/crypto.js';
 import { buildAxisDidV2 } from '../utils/did.js';
+import { verifyCanonicalProof } from '../utils/proof.js';
 
 export async function handleRegister(body, registrar, env) {
   // Validate required fields
@@ -223,20 +224,31 @@ export async function handleRegister(body, registrar, env) {
     };
   }
 
-  // Verify proof of key ownership (if proof provided)
+  // Verify proof of key ownership (if proof provided).
+  //
+  // v0.2 §6.1: the client signs the canonical form of the request body MINUS
+  // the `proof` field. `proofType: "jcs-eddsa-2026"` ⇒ RFC 8785 JCS;
+  // `proofType` absent ⇒ legacy v0.1 canonicalization (JCS attempted first,
+  // legacy as fallback). Any other proofType is unrecognized and rejected.
   if (body.proof) {
-    // The client signs a canonical JSON of the request body (minus the proof field)
     const proofInput = { ...body };
     delete proofInput.proof;
-    const canonical = JSON.stringify(proofInput, Object.keys(proofInput).sort());
 
-    const proofValid = await verifyEd25519Signature(
-      body.publicKey,
-      canonical,
-      body.proof.proofValue
-    );
+    const result = await verifyCanonicalProof({
+      payload: proofInput,
+      proofValue: body.proof.proofValue,
+      proofType: body.proof.proofType,
+      publicKey: body.publicKey,
+    });
 
-    if (!proofValid) {
+    if (result.unsupported) {
+      return {
+        status: 400,
+        body: { error: { code: 'unsupported_proof_type', message: `Unrecognized proof type: ${result.proofType}. Supported: jcs-eddsa-2026 (or omit proofType for legacy).` } }
+      };
+    }
+
+    if (!result.valid) {
       return {
         status: 400,
         body: { error: { code: 'invalid_proof', message: 'Proof of key ownership verification failed' } }
