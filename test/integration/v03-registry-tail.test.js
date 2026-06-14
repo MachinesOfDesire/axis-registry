@@ -56,4 +56,6 @@ test('#9: resolving the canonical v0.2 DID has no deprecation warning', async (t
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.didResolutionMetadata.warnings, undefined);
+  // §12.3: /resolve surfaces the canonical did at the top level (cross-form).
+  assert.equal(body.did, agent.did);
 });
