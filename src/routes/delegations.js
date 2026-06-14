@@ -14,8 +14,15 @@ import { verifyDelegationProof } from '../utils/proof.js';
 import { parseAxisDid } from '../utils/did.js';
 
 /** Is DC-proof enforcement enabled? Off by default so legacy/unsigned
- * delegations (and the keyless operator-helper demo) keep working until the
- * signed-DC contract is live-verified and explicitly enabled. */
+ * delegations (and the keyless operator-helper demo) keep working.
+ *
+ * DEPRECATED (memo:dc-enforcement-platform-policy, 2026-06-14): a registry-wide
+ * enforcement switch is the wrong primitive. The registry's job is to VERIFY
+ * and REPORT the truth (signatureValid / delegation_valid), never to globally
+ * reject. Whether signed delegations are REQUIRED is a per-platform policy
+ * (advertised in the platform's /.well-known/axis-access, enforced platform-
+ * side, with an inline-challenge on refusal). This flag stays OFF and should be
+ * removed once nothing references it; kept now only to avoid a behavior change. */
 function dcProofsEnforced(env) {
   return env && env.AXIS_ENFORCE_DC_PROOFS === 'true';
 }
