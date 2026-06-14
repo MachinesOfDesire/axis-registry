@@ -9,6 +9,7 @@
 
 import { findAgent } from './resolve.js';
 import { verifyEd25519Signature } from '../utils/crypto.js';
+import { resolveChainFromCredential } from './delegations.js';
 
 export async function handleVerifyIdentity(identifier, env) {
   const agent = await findAgent(identifier, env);
@@ -154,6 +155,30 @@ export async function handleVerifyAIT(token, env) {
     // is canonical, `delegation_id` is retained for existing consumers
     // (Governor, comments worker) until they migrate.
     const dlg = payload.dlg || payload.delegation_id || null;
+
+    // When the agent claims a delegation (`dlg`), resolve the chain to root and
+    // return the trustworthy effective scope (§4.3, §8 Step 3) — not the AIT's
+    // self-declared `scope`. This is additive: top-level `valid` stays the
+    // AIT-identity assertion (signature + agent status); the delegation's
+    // trustworthiness is surfaced as `delegation_valid` for the platform to act
+    // on. Proof failures fail `delegation_valid` only under DC-proof enforcement.
+    let chainFields = {};
+    if (dlg) {
+      const chain = await resolveChainFromCredential(dlg, env);
+      // §8 Step 3.3: the chain's bottom (the `dlg` credential itself) must name
+      // the acting agent. A delegation issued to someone else doesn't authorize
+      // this presenter.
+      const leaf = chain.chain[0];
+      const boundToAgent = Boolean(leaf && (leaf.to === agent.axis_id || leaf.to === agent.did));
+      chainFields = {
+        delegation_resolved: chain.resolved,
+        delegation_valid: chain.valid && boundToAgent,
+        delegation_bound_to_agent: boundToAgent,
+        delegation_depth: chain.depth,
+        effective_scope: chain.effective_scope,
+      };
+    }
+
     return {
       status: 200,
       body: {
@@ -164,7 +189,8 @@ export async function handleVerifyAIT(token, env) {
         expires_at: payload.exp ? new Date(payload.exp * 1000).toISOString() : null,
         dlg,
         delegation_id: dlg,
-        scope: payload.scope || null
+        scope: payload.scope || null,
+        ...chainFields
       }
     };
 

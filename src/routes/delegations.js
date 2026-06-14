@@ -9,7 +9,7 @@
 
 import { findAgent } from './resolve.js';
 import { generateCredentialId } from '../utils/crypto.js';
-import { validateScopeSet, isScopeSubset } from '../utils/scope.js';
+import { validateScopeSet, isScopeSubset, intersectScopes } from '../utils/scope.js';
 import { verifyDelegationProof } from '../utils/proof.js';
 import { parseAxisDid } from '../utils/did.js';
 
@@ -201,6 +201,80 @@ export async function handleVerifyChain(agentIdentifier, env) {
       rootOperator: rootOperatorInfo,
       verifiedAt: new Date().toISOString()
     }
+  };
+}
+
+// Depth cap for resolving a chain upward from a credential id (mirrors the
+// cascade cap and the spec's depth-16 guidance).
+const CHAIN_RESOLVE_MAX_DEPTH = 16;
+
+/**
+ * Resolve a delegation chain UPWARD from a specific credential id (the form an
+ * AIT's `dlg` claim points at, §4.3), walking `parent_credential_id` to the
+ * root. Verifies each DC's proof, status, expiry, and root-operator
+ * consistency, and computes the chain's effective scope (intersection from
+ * root to leaf, §4.4). Proof failures fail the chain only when DC-proof
+ * enforcement is enabled, so legacy/unsigned chains still resolve (with
+ * signatureValid:false) until enforcement is turned on.
+ *
+ * Returns { resolved, valid, depth, effective_scope, root_operator, chain }.
+ */
+export async function resolveChainFromCredential(credentialId, env) {
+  const enforce = dcProofsEnforced(env);
+  const links = [];
+  const visited = new Set();
+  let currentId = credentialId;
+  let valid = true;
+  let rootOperator = null;
+  const now = new Date();
+
+  while (currentId && links.length < CHAIN_RESOLVE_MAX_DEPTH) {
+    if (visited.has(currentId)) { valid = false; break; }
+    visited.add(currentId);
+
+    const dc = await env.DB.prepare('SELECT * FROM delegations WHERE id = ?').bind(currentId).first();
+    if (!dc) { valid = false; break; } // dangling parent reference
+
+    if (dc.status !== 'active') valid = false;
+    if (new Date(dc.expires_at) < now) valid = false;
+    if (dc.created_at && new Date(dc.created_at) > now) valid = false;
+
+    if (rootOperator === null) rootOperator = dc.root_operator;
+    else if (dc.root_operator !== rootOperator) valid = false;
+
+    let signatureValid = false;
+    if (dc.signed_document) {
+      const issuerKey = await resolveIssuerPublicKey(dc.issued_by, env);
+      if (issuerKey) {
+        signatureValid = (await verifyDelegationProof(dc.signed_document, issuerKey)).valid;
+      }
+    }
+    if (enforce && !signatureValid) valid = false;
+
+    links.push({
+      delegation: dc.id,
+      from: dc.issued_by,
+      to: dc.issued_to,
+      scope: JSON.parse(dc.scope),
+      signatureValid,
+      status: dc.status,
+    });
+    currentId = dc.parent_credential_id;
+  }
+
+  // Effective scope: intersect from root-most to leaf-most (links are leaf-first).
+  let effective = null;
+  for (const link of [...links].reverse()) {
+    effective = effective === null ? link.scope : intersectScopes(effective, link.scope);
+  }
+
+  return {
+    resolved: links.length > 0,
+    valid: links.length > 0 && valid,
+    depth: links.length,
+    effective_scope: effective || [],
+    root_operator: rootOperator,
+    chain: links,
   };
 }
 
