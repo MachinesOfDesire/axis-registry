@@ -459,11 +459,15 @@ export async function handleCreateDelegation(body, registrar, env) {
   if (signed) {
     // Bound the stored document before doing anything expensive. Fail fast and
     // explicitly rather than letting an oversized doc surface as a D1 500.
+    // Measure true UTF-8 byte length (not JS string .length, which counts
+    // UTF-16 code units and under-counts multibyte content) so the limit means
+    // what the error says.
     const candidateDoc = JSON.stringify(body);
-    if (candidateDoc.length > MAX_SIGNED_DC_BYTES) {
+    const docBytes = new TextEncoder().encode(candidateDoc).length;
+    if (docBytes > MAX_SIGNED_DC_BYTES) {
       return {
         status: 400,
-        body: { error: { code: 'document_too_large', message: `Signed delegation document exceeds the ${MAX_SIGNED_DC_BYTES}-byte limit.` } }
+        body: { error: { code: 'document_too_large', message: `Signed delegation document is ${docBytes} bytes; exceeds the ${MAX_SIGNED_DC_BYTES}-byte limit.` } }
       };
     }
 
