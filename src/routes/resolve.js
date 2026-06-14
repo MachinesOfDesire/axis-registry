@@ -215,7 +215,7 @@ function buildAgentRecord(agent, operator, includePresentation, env) {
   // Public layer — always returned, no authentication required.
   // Contains only what is necessary for cryptographic verification.
   const record = {
-    axis_version: '0.1',
+    axis_version: '0.2',
     agent_id: agent.axis_id,
     did: agent.did,
     // operator_id is returned in canonical `axis:<slug>:operator` form,

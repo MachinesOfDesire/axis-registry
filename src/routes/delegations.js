@@ -697,8 +697,19 @@ async function cascadeRevoke(parentId, timestamp, reason, env, visited = new Set
 }
 
 function formatDelegation(d) {
+  // Echo the version the DC was signed under when we have the signed document
+  // (Option A); otherwise default to the current credential-format version
+  // (v0.2 — AIR/DC formats are stable since v0.2; v0.3 added discovery + verify
+  // features, not DC-format changes for what the registry emits).
+  let axisVersion = '0.2';
+  if (d.signed_document) {
+    try {
+      const v = JSON.parse(d.signed_document).axis_version;
+      if (typeof v === 'string' && v) axisVersion = v;
+    } catch { /* keep default */ }
+  }
   return {
-    axis_version: '0.1',
+    axis_version: axisVersion,
     type: 'DelegationCredential',
     id: d.id,
     issued_by: d.issued_by,
