@@ -61,20 +61,25 @@ export default {
       // Free, unlimited, no rate limits
       // ==========================================
 
-      // GET /.well-known/axis-access — Platform-side access control policy
+      // GET /.well-known/axis-access — Platform-side access control policy.
+      // v0.2 §7: `audience` is REQUIRED — the platform's stable audience
+      // identifier that AIT issuers populate in the `aud` claim and verifiers
+      // match against. Convention is subdomain-shaped; here it equals the
+      // platform_id (the registry's host). §14 conformance fails without it.
       if (method === 'GET' && path === '/.well-known/axis-access') {
         const registryBase = env.REGISTRY_BASE_URL || 'https://registry.axisprime.ai';
         const platformId = registryBase.replace(/^https?:\/\//, '').replace(/\/$/, '');
         return addCors(jsonResponse(200, {
-          axis_version: '0.1',
+          axis_version: '0.2',
           platform_id: platformId,
+          audience: platformId,
           access_policy: {
             minimum_verification_level: 'email',
             required_scopes: [],
             allow_unverified: true,
             registration_url: 'https://signup.axisprime.ai/signup'
           },
-          updated_at: '2026-04-13T00:00:00Z'
+          updated_at: '2026-06-14T00:00:00Z'
         }));
       }
 

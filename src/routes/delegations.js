@@ -9,6 +9,7 @@
 
 import { findAgent } from './resolve.js';
 import { generateCredentialId } from '../utils/crypto.js';
+import { validateScopeSet, isScopeSubset } from '../utils/scope.js';
 
 // M5: cap on how far in the future a delegation's `expires` can sit.
 // Defeats the "100-year delegation" pattern that destroys revocation hygiene.
@@ -77,11 +78,11 @@ export async function handleVerifyChain(agentIdentifier, env) {
     }
 
     // Check scope attenuation (each link must be equal or narrower than parent)
+    // per §4.4 matching rules (wildcard-aware).
     const scope = JSON.parse(delegation.scope);
     if (delegation.parent_credential_id && chain.length > 0) {
       const parentScope = JSON.parse(chain[chain.length - 1].scope);
-      const scopeValid = scope.every(s => parentScope.includes(s));
-      if (!scopeValid) chainValid = false;
+      if (!isScopeSubset(scope, parentScope)) chainValid = false;
     }
 
     // Check expiry
@@ -224,11 +225,14 @@ export async function handleCreateDelegation(body, registrar, env) {
     }
   }
 
-  // Validate scope is an array
-  if (!Array.isArray(scope)) {
+  // Validate scope is an array of well-formed scope strings (§4.4 grammar:
+  // colon-separated [a-zA-Z0-9_-] segments or the single-segment wildcard `*`;
+  // `**` and other malformed segments rejected; bounded set + segment counts).
+  const scopeCheck = validateScopeSet(scope);
+  if (!scopeCheck.valid) {
     return {
       status: 400,
-      body: { error: { code: 'invalid_request', message: 'scope must be an array of strings' } }
+      body: { error: { code: 'invalid_scope', message: scopeCheck.reason } }
     };
   }
 
@@ -253,10 +257,10 @@ export async function handleCreateDelegation(body, registrar, env) {
       };
     }
 
-    // Check scope attenuation
+    // Check scope attenuation per §4.4 matching rules (wildcard-aware), not a
+    // naive exact-string membership test.
     const parentScope = JSON.parse(parent.scope);
-    const scopeValid = scope.every(s => parentScope.includes(s));
-    if (!scopeValid) {
+    if (!isScopeSubset(scope, parentScope)) {
       return {
         status: 400,
         body: { error: { code: 'delegation_chain_invalid', message: 'Scope must be equal to or narrower than parent credential scope (attenuation rule)' } }
