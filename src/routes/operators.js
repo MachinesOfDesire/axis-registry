@@ -8,6 +8,7 @@
 
 import { generateToken } from '../utils/crypto.js';
 import { deriveOperatorSlug } from '../utils/operator-slug.js';
+import { verifyCanonicalProof } from '../utils/proof.js';
 
 export async function handleVerifyDomain(body, registrar, env) {
   const { domain, method, email } = body;
@@ -275,6 +276,101 @@ export async function handleSetOperatorVerification(operatorId, body, registrar,
       max_agents: maxAgents,
       provider
     }
+  };
+}
+
+/**
+ * POST /operators/:id/key — register (or idempotently confirm) an operator's
+ * Ed25519 signing public key, with proof of key ownership.
+ *
+ * Why this exists (the gap it closes): an operator that issues a root
+ * DelegationCredential (`issued_by: axis:{op}:operator`) signs that DC with its
+ * private key. Verifying that root link's signature requires the operator's
+ * PUBLIC key (resolveIssuerPublicKey, delegations.js §8 Step 3). Until this
+ * endpoint, `operators.public_key` was only ever READ — there was no way to SET
+ * it, so operator-rooted chains could never report `signatureValid:true` and
+ * full signed-chain enforcement could never be turned on for them. The keyless
+ * operator-helper demo worked precisely because no operator key existed.
+ *
+ * Design (mirrors POST /register's proof-of-ownership, v0.2 §6.1):
+ *   - Registrar-authenticated; BOLA-scoped to the registrar's own operators.
+ *   - The operator signs the JCS canonicalization of the request body MINUS
+ *     `proof`, with the private key matching `publicKey`. Proof is REQUIRED here
+ *     (the whole point is to prove control of the key being registered).
+ *   - Additive + backward-compatible: keyless operators keep working; this only
+ *     populates a previously-NULL column. Enforcement (AXIS_ENFORCE_DC_PROOFS)
+ *     stays OFF and is unaffected by registering a key.
+ *   - NOT key rotation. If a DIFFERENT key is already registered, returns 409 —
+ *     rotation is the separate v0.3 key-rotation candidate, not this endpoint.
+ *     Re-submitting the SAME key is idempotent (200).
+ *
+ * Body: { publicKey: string (base64url Ed25519), proof: { proofType?, proofValue } }
+ */
+export async function handleRegisterOperatorKey(operatorId, body, registrar, env) {
+  if (!registrar) {
+    return { status: 401, body: { error: { code: 'unauthorized', message: 'Valid registrar API key required' } } };
+  }
+  if (!body || typeof body.publicKey !== 'string' || body.publicKey.trim() === '') {
+    return { status: 400, body: { error: { code: 'invalid_request', message: 'Missing required field: publicKey' } } };
+  }
+  if (!body.proof || typeof body.proof.proofValue !== 'string') {
+    return { status: 400, body: { error: { code: 'invalid_request', message: 'Missing required field: proof.proofValue (proof of key ownership is required)' } } };
+  }
+
+  const operator = await env.DB.prepare(
+    'SELECT id, registrar_id, status, public_key FROM operators WHERE id = ?'
+  ).bind(operatorId).first();
+  if (!operator) {
+    return { status: 404, body: { error: { code: 'operator_not_found', message: 'Operator not found' } } };
+  }
+  // BOLA: a registrar may only register keys for its own operators.
+  if (operator.registrar_id !== registrar.id) {
+    return { status: 403, body: { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } } };
+  }
+  if (operator.status !== 'active') {
+    return { status: 403, body: { error: { code: 'operator_not_verified', message: `Operator status: ${operator.status}` } } };
+  }
+
+  // Rotation guard: this endpoint registers a key, it does not rotate one.
+  if (operator.public_key) {
+    if (operator.public_key === body.publicKey) {
+      // Idempotent re-registration of the same key — succeed without re-writing.
+      return {
+        status: 200,
+        body: { operator_id: `axis:${operator.id}:operator`, public_key: operator.public_key, key_registered: true, idempotent: true },
+      };
+    }
+    return {
+      status: 409,
+      body: { error: { code: 'key_already_registered', message: 'Operator already has a different signing key. Key rotation is a separate flow (v0.3 key-rotation candidate), not this endpoint.' } },
+    };
+  }
+
+  // Verify proof of key ownership: the operator signs the canonical body minus
+  // `proof` with the private key matching `publicKey`. Same regime as /register.
+  const proofInput = { ...body };
+  delete proofInput.proof;
+  const result = await verifyCanonicalProof({
+    payload: proofInput,
+    proofValue: body.proof.proofValue,
+    proofType: body.proof.proofType,
+    publicKey: body.publicKey,
+  });
+  if (result.unsupported) {
+    return { status: 400, body: { error: { code: 'unsupported_proof_type', message: `Unrecognized proof type: ${result.proofType}. Supported: jcs-eddsa-2026 (or omit proofType for legacy).` } } };
+  }
+  if (!result.valid) {
+    return { status: 400, body: { error: { code: 'invalid_proof', message: 'Proof of key ownership verification failed' } } };
+  }
+
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE operators SET public_key = ?, updated_at = ? WHERE id = ?`
+  ).bind(body.publicKey, now, operator.id).run();
+
+  return {
+    status: 200,
+    body: { operator_id: `axis:${operator.id}:operator`, public_key: body.publicKey, key_registered: true },
   };
 }
 

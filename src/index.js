@@ -12,7 +12,7 @@ import { handleResolve, handleGetAgent, extractPresentationContext } from './rou
 import { handleVerifyIdentity, handleVerifyAIT, handleVerifySignature } from './routes/verify.js';
 import { handleRevocation, handleDeactivateAgent, forceDeactivateAgent } from './routes/revocation.js';
 import { handleCreateDelegation, handleGetDelegation, handleRevokeDelegation, handleVerifyChain, forceRevokeDelegation } from './routes/delegations.js';
-import { handleVerifyDomain, handleCheckDomain, handleSetOperatorVerification } from './routes/operators.js';
+import { handleVerifyDomain, handleCheckDomain, handleSetOperatorVerification, handleRegisterOperatorKey } from './routes/operators.js';
 import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from './middleware/auth.js';
 import { corsHeaders, handleOptions } from './middleware/cors.js';
 import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit.js';
@@ -627,6 +627,20 @@ export default {
           const opId = decodeURIComponent(m[1]);
           const body = await request.json().catch(() => ({}));
           const result = await handleSetOperatorVerification(opId, body, registrar, env);
+          return addCors(jsonResponse(result.status, result.body));
+        }
+      }
+
+      // POST /operators/:id/key — register the operator's Ed25519 signing key
+      // (proof-of-ownership). Lets operator-rooted delegation chains report a
+      // verifiable root signature. BOLA-scoped; additive (populates a NULL
+      // column), enforcement-neutral.
+      {
+        const m = path.match(/^\/operators\/([^/]+)\/key$/);
+        if (method === 'POST' && m) {
+          const opId = decodeURIComponent(m[1]);
+          const body = await request.json().catch(() => ({}));
+          const result = await handleRegisterOperatorKey(opId, body, registrar, env);
           return addCors(jsonResponse(result.status, result.body));
         }
       }
