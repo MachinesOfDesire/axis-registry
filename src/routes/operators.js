@@ -64,14 +64,24 @@ export async function handleVerifyDomain(body, registrar, env) {
         body: { error: { code: 'not_your_resource', message: 'Operator already exists under a different registrar' } }
       };
     }
-    // Update verification token AND persist the claimed domain.
-    // Without writing `domain` here, handleCheckDomain's later WHERE domain=?
-    // lookup fails for operators that were pre-created (e.g. during signup)
-    // with domain=NULL and only now are claiming one.
-    await env.DB.prepare(
-      `UPDATE operators SET domain = ?, domain_verification_token = ?, domain_verification_expires = ?,
-       domain_verification_method = ?, updated_at = datetime('now') WHERE id = ?`
-    ).bind(domain || null, token, expiresAt, verificationMethod, operator.id).run();
+    // Only (re)initiate domain verification when a domain is actually supplied.
+    // This UPDATE persists the claimed domain + a fresh token so that
+    // handleCheckDomain's later `WHERE domain = ?` lookup can find operators
+    // pre-created (e.g. during email signup) with domain=NULL that are only now
+    // claiming a domain.
+    //
+    // It MUST be guarded by `if (domain)`. The registrar's signup flow always
+    // calls with email only (no domain), and binding `domain || null` here
+    // unconditionally would (a) NULL out a domain this operator previously
+    // claimed/verified, and (b) churn an in-flight verification token — every
+    // time the user merely signs in again. The guard makes an email-only call
+    // against an existing operator a no-op: it already exists and is active.
+    if (domain) {
+      await env.DB.prepare(
+        `UPDATE operators SET domain = ?, domain_verification_token = ?, domain_verification_expires = ?,
+         domain_verification_method = ?, updated_at = datetime('now') WHERE id = ?`
+      ).bind(domain, token, expiresAt, verificationMethod, operator.id).run();
+    }
   } else {
     // Create new operator
     await env.DB.prepare(
@@ -101,6 +111,19 @@ export async function handleVerifyDomain(body, registrar, env) {
   // recorded a non-resolving id.
   const responseOperatorId = operator ? operator.id : operatorId;
 
+  // Report the persisted operator's state, not just what this request happened
+  // to send. For a NEW operator these equal the request-derived values; for an
+  // EXISTING one (e.g. an email-only re-signup of an operator that already
+  // verified a domain) they reflect what's actually on the row. `active` means
+  // "usable right now": email-tier is always active; domain-tier is active once
+  // its domain is verified. A brand-new domain operator is therefore inactive
+  // (pending verification), preserving the previous `active: !domain` behavior.
+  const resolvedTier = operator ? operator.verification_tier : tier;
+  const resolvedDomain = domain || (operator ? operator.domain : null);
+  const resolvedActive = resolvedTier === 'email'
+    ? true
+    : Boolean(operator ? operator.domain_verified : false);
+
   // Build response based on method
   const instructions = {};
 
@@ -121,14 +144,14 @@ export async function handleVerifyDomain(body, registrar, env) {
     status: 200,
     body: {
       operator_id: responseOperatorId,
-      domain: domain || null,
+      domain: resolvedDomain,
       email,
-      tier,
+      tier: resolvedTier,
       method: domain ? verificationMethod : 'email',
       token: domain ? token : undefined,
       instructions: domain ? instructions : { email: { message: 'Email-only accounts do not require domain verification. Your account is active.' } },
       expiresAt: domain ? expiresAt : undefined,
-      active: !domain // email-only accounts are immediately active
+      active: resolvedActive
     }
   };
 }
