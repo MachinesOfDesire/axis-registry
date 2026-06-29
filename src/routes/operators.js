@@ -89,6 +89,18 @@ export async function handleVerifyDomain(body, registrar, env) {
     ).bind(operatorId, freeSlots, maxAgents).run();
   }
 
+  // The operator_id reported back MUST be the id of the row that actually
+  // persists. For a NEW operator that's the freshly-derived slug we just
+  // INSERTed; for an EXISTING operator it's `operator.id` — the row we just
+  // UPDATEd. Returning the freshly-minted `operatorId` for an operator that
+  // already exists hands the registrar a phantom id that was never written,
+  // so the registrar stores an `operator_id` the registry can't resolve
+  // (GET /operators/:id → 404). This is exactly the 2026-06-29 email-tier
+  // signup incident: josh.ashcroft@gmail.com already had an operator from an
+  // earlier signup, so the repeat signup hit this branch and the registrar
+  // recorded a non-resolving id.
+  const responseOperatorId = operator ? operator.id : operatorId;
+
   // Build response based on method
   const instructions = {};
 
@@ -108,7 +120,7 @@ export async function handleVerifyDomain(body, registrar, env) {
   return {
     status: 200,
     body: {
-      operator_id: operatorId,
+      operator_id: responseOperatorId,
       domain: domain || null,
       email,
       tier,
