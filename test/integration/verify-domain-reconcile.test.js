@@ -112,3 +112,96 @@ test('verify-domain: repeat signup against a pre-existing operator row resolves'
   const got = await getOperator(harness, reg, res.body.operator_id);
   assert.equal(got.status, 200, 'returned operator_id must resolve');
 });
+
+async function getOperatorRow(harness, id) {
+  return harness.db
+    .prepare('SELECT id, domain, verification_tier, domain_verified, domain_verification_token FROM operators WHERE id = ?')
+    .bind(id)
+    .first();
+}
+
+test('verify-domain: email-only re-signup does NOT clobber an existing operator\'s verified domain', async (t) => {
+  // The registrar always calls verify-domain with email only. If that path
+  // runs the existing-operator UPDATE unconditionally, it binds domain=NULL and
+  // wipes a domain the operator previously verified. Guard must make it a no-op.
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const reg = await harness.createRegistrar({ id: 'reg-a' });
+  const op = await harness.createOperator({
+    registrar_id: reg.id,
+    tier: 'domain',
+    domain: 'acme.example.com',
+    email: 'owner@acme.example.com',
+    domain_verified: true,
+  });
+
+  const res = await verifyDomain(harness, reg, { email: 'owner@acme.example.com' });
+  assert.equal(res.status, 200);
+
+  // Response reflects the persisted operator, not the (domain-less) request.
+  assert.equal(res.body.operator_id, op.id);
+  assert.equal(res.body.tier, 'domain', 'tier must reflect the persisted operator');
+  assert.equal(res.body.domain, 'acme.example.com', 'domain must reflect the persisted operator');
+  assert.equal(res.body.active, true, 'a verified domain operator is active');
+
+  // The row itself is untouched: domain still present, still verified.
+  const row = await getOperatorRow(harness, op.id);
+  assert.equal(row.domain, 'acme.example.com', 'existing domain must NOT be nulled');
+  assert.equal(row.domain_verified, 1, 'verified flag must be preserved');
+});
+
+test('verify-domain: email-only re-signup does NOT churn an in-flight verification token', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const reg = await harness.createRegistrar({ id: 'reg-a' });
+  const op = await harness.createOperator({
+    registrar_id: reg.id,
+    tier: 'domain',
+    domain: 'pending.example.com',
+    email: 'owner@pending.example.com',
+    domain_verified: false,
+  });
+  await harness.db
+    .prepare('UPDATE operators SET domain_verification_token = ? WHERE id = ?')
+    .bind('in-flight-token-xyz', op.id)
+    .run();
+
+  const res = await verifyDomain(harness, reg, { email: 'owner@pending.example.com' });
+  assert.equal(res.status, 200);
+
+  const row = await getOperatorRow(harness, op.id);
+  assert.equal(row.domain_verification_token, 'in-flight-token-xyz', 'in-flight token must be preserved');
+  assert.equal(row.domain, 'pending.example.com', 'pending domain must be preserved');
+});
+
+test('verify-domain: domain claim on a pre-existing email operator still persists domain + returns instructions', async (t) => {
+  // Regression: the guarded UPDATE must still run when a domain IS supplied, so
+  // an operator pre-created email-tier (domain=NULL) can claim a domain and
+  // handleCheckDomain can later find it by domain.
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const reg = await harness.createRegistrar({ id: 'reg-a' });
+  const op = await harness.createOperator({
+    registrar_id: reg.id,
+    tier: 'email',
+    email: 'claimer@example.com',
+    domain_verified: false,
+  });
+
+  const res = await verifyDomain(harness, reg, {
+    email: 'claimer@example.com',
+    domain: 'claimer-co.example.com',
+    method: 'dns_txt',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.operator_id, op.id);
+  assert.ok(res.body.token, 'domain claim must return a verification token');
+  assert.ok(res.body.instructions?.dns_txt, 'domain claim must return DNS instructions');
+
+  const row = await getOperatorRow(harness, op.id);
+  assert.equal(row.domain, 'claimer-co.example.com', 'claimed domain must be persisted');
+  assert.equal(row.domain_verification_token, res.body.token, 'persisted token must match the one returned');
+});
