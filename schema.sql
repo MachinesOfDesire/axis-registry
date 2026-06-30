@@ -75,8 +75,15 @@ CREATE TABLE IF NOT EXISTS operators (
   FOREIGN KEY (registrar_id) REFERENCES registrars(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_operators_email ON operators(email);
-CREATE INDEX IF NOT EXISTS idx_operators_domain ON operators(domain);
+-- An operator is identified by its natural keys: one operator per email, and a
+-- verified domain belongs to exactly one operator. These are UNIQUE (not plain)
+-- indexes so the database itself refuses a duplicate operator — the
+-- "one operator per email" invariant is enforced by construction, not by the
+-- handler remembering to look before it inserts. The domain index is partial
+-- (WHERE domain IS NOT NULL) so the many email-tier operators with NULL domain
+-- don't collide. See migrations/0007_operator_unique_constraints.sql.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_operators_email ON operators(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_operators_domain ON operators(domain) WHERE domain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_operators_stripe ON operators(stripe_customer_id);
 
 -- ============================================
