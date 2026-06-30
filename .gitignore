@@ -6,6 +6,10 @@
 # their own values. The real file is intentionally not committed.
 wrangler.toml
 
+# Personal, per-developer Claude Code project context. Declares itself
+# gitignored; this repo is public (Apache 2.0) so it must never be committed.
+CLAUDE.local.md
+
 # Real registrar key seed. Each deployer copies seed-key.sql.example ->
 # seed-key.sql and fills in the SHA-256 of their bootstrap Bearer token.
 # Publishing the live hash removes a layer of obscurity (per L3 review item).
