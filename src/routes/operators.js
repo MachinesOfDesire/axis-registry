@@ -43,86 +43,108 @@ export async function handleVerifyDomain(body, registrar, env) {
   // See src/utils/operator-slug.js for the full tier table + rationale.
   const operatorId = deriveOperatorSlug(tier, domain);
 
-  // Check if operator already exists.
-  // M1: bind NULL (not '') when no domain is supplied — binding '' could
-  // accidentally match a drifted row stored with domain=''.
-  let operator = await env.DB.prepare(
-    'SELECT * FROM operators WHERE domain = ? OR email = ?'
-  ).bind(domain ? domain : null, email).first();
-
   const token = generateToken(16);
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(); // 72 hours
 
-  if (operator) {
-    // BOLA: operator already exists and belongs to a different registrar.
-    // A cross-registrar domain dispute/claim must go through an admin force
-    // endpoint (not exposed on this normal path). Admin+ callers hit this
-    // rule too on the normal path.
-    if (operator.registrar_id !== registrar.id) {
-      return {
-        status: 403,
-        body: { error: { code: 'not_your_resource', message: 'Operator already exists under a different registrar' } }
-      };
-    }
-    // Only (re)initiate domain verification when a domain is actually supplied.
-    // This UPDATE persists the claimed domain + a fresh token so that
-    // handleCheckDomain's later `WHERE domain = ?` lookup can find operators
-    // pre-created (e.g. during email signup) with domain=NULL that are only now
-    // claiming a domain.
-    //
-    // It MUST be guarded by `if (domain)`. The registrar's signup flow always
-    // calls with email only (no domain), and binding `domain || null` here
-    // unconditionally would (a) NULL out a domain this operator previously
-    // claimed/verified, and (b) churn an in-flight verification token — every
-    // time the user merely signs in again. The guard makes an email-only call
-    // against an existing operator a no-op: it already exists and is active.
-    if (domain) {
-      await env.DB.prepare(
-        `UPDATE operators SET domain = ?, domain_verification_token = ?, domain_verification_expires = ?,
-         domain_verification_method = ?, updated_at = datetime('now') WHERE id = ?`
-      ).bind(domain, token, expiresAt, verificationMethod, operator.id).run();
-    }
-  } else {
-    // Create new operator
-    await env.DB.prepare(
-      `INSERT INTO operators (id, email, domain, verification_tier, domain_verification_token,
-       domain_verification_expires, domain_verification_method, registrar_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(operatorId, email, domain || null, tier, token, expiresAt, domain ? verificationMethod : null, registrar.id).run();
-
-    // Create agent slots based on tier
-    const freeSlots = tier === 'domain' ? 3 : 0;
-    const maxAgents = tier === 'email' ? 5 : null;
-    await env.DB.prepare(
-      `INSERT INTO agent_slots (operator_id, free_slots_total, max_agents)
-       VALUES (?, ?, ?)`
-    ).bind(operatorId, freeSlots, maxAgents).run();
+  // BOLA: if an operator already exists for this email/domain under a DIFFERENT
+  // registrar, refuse — a cross-registrar claim must go through an admin force
+  // endpoint, not this normal path. This SELECT produces the clean 403; the
+  // upsert below also carries a `WHERE ... registrar_id` guard so the protection
+  // holds structurally even under a race this advisory read could miss.
+  // M1: bind NULL (not '') when no domain is supplied.
+  const existing = await env.DB.prepare(
+    'SELECT registrar_id FROM operators WHERE domain = ? OR email = ?'
+  ).bind(domain ? domain : null, email).first();
+  if (existing && existing.registrar_id !== registrar.id) {
+    return {
+      status: 403,
+      body: { error: { code: 'not_your_resource', message: 'Operator already exists under a different registrar' } }
+    };
   }
 
-  // The operator_id reported back MUST be the id of the row that actually
-  // persists. For a NEW operator that's the freshly-derived slug we just
-  // INSERTed; for an EXISTING operator it's `operator.id` — the row we just
-  // UPDATEd. Returning the freshly-minted `operatorId` for an operator that
-  // already exists hands the registrar a phantom id that was never written,
-  // so the registrar stores an `operator_id` the registry can't resolve
-  // (GET /operators/:id → 404). This is exactly the 2026-06-29 email-tier
-  // signup incident: josh.ashcroft@gmail.com already had an operator from an
-  // earlier signup, so the repeat signup hit this branch and the registrar
-  // recorded a non-resolving id.
-  const responseOperatorId = operator ? operator.id : operatorId;
+  // Single idempotent upsert keyed on the operator's natural key (email). This
+  // is the structural fix for the 2026-06-29 incident class — three former
+  // "remember to do it right" rules are now enforced by the statement itself:
+  //
+  //   * ON CONFLICT(email) DO UPDATE — a repeat signup reconciles to the SAME
+  //     row instead of minting a duplicate. UNIQUE(email) (migration 0007)
+  //     makes a duplicate operator impossible even under a concurrent race.
+  //   * COALESCE(excluded.x, operators.x) — an email-only call binds NULL for
+  //     the domain/verification columns, so it can NEVER overwrite a domain or
+  //     in-flight token an operator already has. Clobber is unrepresentable.
+  //   * RETURNING — the row we read back IS the persisted row, so the id (and
+  //     tier/domain/active) we report can't be a phantom that was never written.
+  //
+  // The `WHERE operators.registrar_id = excluded.registrar_id` guard makes the
+  // BOLA protection structural: on a cross-registrar email conflict the DO
+  // UPDATE matches no row, RETURNING is empty, and we surface 403 below. A
+  // genuine cross-operator domain collision trips UNIQUE(domain) and throws —
+  // caught and surfaced as 409 (anti-squatting, now DB-enforced).
+  //
+  // Verification columns are bound NULL unless a domain is actually being
+  // claimed, which is what lets COALESCE preserve an existing operator's state
+  // on an email-only call (and means email-tier rows carry no useless token).
+  const insDomain = domain || null;
+  const insToken = domain ? token : null;
+  const insExpires = domain ? expiresAt : null;
+  const insMethod = domain ? verificationMethod : null;
+  let row;
+  try {
+    row = await env.DB.prepare(
+      `INSERT INTO operators (id, email, domain, verification_tier, domain_verification_token,
+         domain_verification_expires, domain_verification_method, registrar_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email) DO UPDATE SET
+         domain = COALESCE(excluded.domain, operators.domain),
+         domain_verification_token = COALESCE(excluded.domain_verification_token, operators.domain_verification_token),
+         domain_verification_expires = COALESCE(excluded.domain_verification_expires, operators.domain_verification_expires),
+         domain_verification_method = COALESCE(excluded.domain_verification_method, operators.domain_verification_method),
+         updated_at = datetime('now')
+       WHERE operators.registrar_id = excluded.registrar_id
+       RETURNING id, domain, verification_tier, domain_verified`
+    ).bind(operatorId, email, insDomain, tier, insToken, insExpires, insMethod, registrar.id).first();
+  } catch (err) {
+    // UNIQUE(domain) violation: the claimed domain is verified under another
+    // operator. (An email natural-key conflict is absorbed by DO UPDATE above;
+    // only a domain collision reaches here.)
+    if (/UNIQUE/i.test(err?.message || '') && /domain/i.test(err?.message || '')) {
+      return {
+        status: 409,
+        body: { error: { code: 'domain_taken', message: 'Domain is already claimed by another operator' } }
+      };
+    }
+    throw err;
+  }
 
-  // Report the persisted operator's state, not just what this request happened
-  // to send. For a NEW operator these equal the request-derived values; for an
-  // EXISTING one (e.g. an email-only re-signup of an operator that already
-  // verified a domain) they reflect what's actually on the row. `active` means
-  // "usable right now": email-tier is always active; domain-tier is active once
-  // its domain is verified. A brand-new domain operator is therefore inactive
-  // (pending verification), preserving the previous `active: !domain` behavior.
-  const resolvedTier = operator ? operator.verification_tier : tier;
-  const resolvedDomain = domain || (operator ? operator.domain : null);
-  const resolvedActive = resolvedTier === 'email'
-    ? true
-    : Boolean(operator ? operator.domain_verified : false);
+  // RETURNING empty ⟺ an email conflict whose row belongs to another registrar
+  // (the WHERE guard suppressed the update). Race-safe backstop for the 403.
+  if (!row) {
+    return {
+      status: 403,
+      body: { error: { code: 'not_your_resource', message: 'Operator already exists under a different registrar' } }
+    };
+  }
+
+  // Slots are created once per operator, keyed on the PERSISTED id (row.id, not
+  // the speculative slug) and made idempotent with ON CONFLICT DO NOTHING, so a
+  // reconciling repeat signup neither orphans a slot row nor disturbs existing
+  // counters. agent_slots.operator_id is the PK → valid conflict target.
+  const freeSlots = row.verification_tier === 'domain' ? 3 : 0;
+  const maxAgents = row.verification_tier === 'email' ? 5 : null;
+  await env.DB.prepare(
+    `INSERT INTO agent_slots (operator_id, free_slots_total, max_agents)
+     VALUES (?, ?, ?)
+     ON CONFLICT(operator_id) DO NOTHING`
+  ).bind(row.id, freeSlots, maxAgents).run();
+
+  // Everything reported below comes from the persisted row (authoritative),
+  // never the request inputs. `active` = usable now: email-tier always;
+  // domain-tier once its domain is verified (a brand-new domain operator is
+  // therefore inactive, pending verification).
+  const responseOperatorId = row.id;
+  const resolvedTier = row.verification_tier;
+  const resolvedDomain = row.domain;
+  const resolvedActive = row.verification_tier === 'email' ? true : Boolean(row.domain_verified);
 
   // Build response based on method
   const instructions = {};
