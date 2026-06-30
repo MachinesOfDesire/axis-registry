@@ -17,6 +17,7 @@ import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from 
 import { corsHeaders, handleOptions } from './middleware/cors.js';
 import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit.js';
 import { logAudit } from './utils/audit.js';
+import { recordVerifyEvent } from './utils/telemetry.js';
 import { STANDARD_VOCABULARY } from './utils/scope-vocab.js';
 import { REGISTRY_MANIFEST, ROOT_DIRECTORY } from './legitimacy/artifacts.js';
 
@@ -270,6 +271,10 @@ export default {
         const token = url.searchParams.get('token');
         if (token) {
           const result = await handleVerifyAIT(token, env);
+          // Adoption/activity telemetry: one event per AIT verify, written
+          // async OFF the hot path so it never adds latency or a failure mode
+          // to the free verify endpoint. Captures AXIS-internal ids only.
+          ctx.waitUntil(recordVerifyEvent(env, token, result));
           return addCors(jsonResponse(result.status, result.body));
         }
       }
