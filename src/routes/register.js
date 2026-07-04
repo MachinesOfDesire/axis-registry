@@ -378,3 +378,48 @@ async function buildSlotReceipt(env, operator) {
     operator_verification_tier: operator.verification_tier,
   };
 }
+
+/**
+ * PATCH /agents/:id — update the human-facing fields of an agent. Only
+ * display_name and description are mutable; the AXIS id, DID, public key, and
+ * operator binding are immutable by design. Registrar-authenticated and
+ * BOLA-scoped: a registrar can only update agents it owns.
+ */
+export async function handleUpdateAgent(agentId, body, registrar, env) {
+  const agent = await env.DB.prepare(
+    'SELECT id, registrar_id FROM agents WHERE id = ? OR axis_id = ? OR did = ?'
+  ).bind(agentId, agentId, agentId).first();
+  if (!agent) {
+    return { status: 404, body: { error: { code: 'agent_not_found', message: 'Agent not found' } } };
+  }
+  // BOLA: normal-path mutation is scoped to the caller's own registrar_id.
+  if (agent.registrar_id !== registrar.id) {
+    return { status: 403, body: { error: { code: 'not_your_resource', message: 'Agent belongs to a different registrar' } } };
+  }
+
+  const updates = [];
+  const binds = [];
+  if (typeof body.display_name === 'string') {
+    const dn = body.display_name.trim().slice(0, 60);
+    if (!dn) {
+      return { status: 400, body: { error: { code: 'invalid_display_name', message: 'display_name cannot be empty' } } };
+    }
+    updates.push('display_name = ?'); binds.push(dn);
+  }
+  if (typeof body.description === 'string') {
+    updates.push('description = ?'); binds.push(body.description.slice(0, 500));
+  }
+  if (updates.length === 0) {
+    return { status: 400, body: { error: { code: 'no_updates', message: 'Provide display_name and/or description to update.' } } };
+  }
+
+  const now = new Date().toISOString();
+  updates.push('updated_at = ?'); binds.push(now);
+  binds.push(agent.id);
+  await env.DB.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).bind(...binds).run();
+
+  const updated = await env.DB.prepare(
+    'SELECT id, axis_id, did, display_name, description, status FROM agents WHERE id = ?'
+  ).bind(agent.id).first();
+  return { status: 200, body: { agent: updated } };
+}
