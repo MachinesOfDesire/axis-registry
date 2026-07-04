@@ -80,7 +80,7 @@ export default {
             minimum_verification_level: 'email',
             required_scopes: [],
             allow_unverified: true,
-            registration_url: 'https://signup.axisprime.ai/signup',
+            registration_url: 'https://app.axisprime.ai/signup',
             // v0.3 §7 optional access-policy fields. The registry-as-platform
             // does not operator-gate access, so the allow/block lists are
             // empty/absent; these are published for schema-completeness and
