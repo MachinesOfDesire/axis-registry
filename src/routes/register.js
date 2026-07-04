@@ -69,6 +69,36 @@ export async function handleRegister(body, registrar, env) {
     };
   }
 
+  // ── Idempotency: the public key IS the identity ─────────────────────────
+  // If this exact key is already a registered agent, this is a re-bind, not a
+  // new registration: return the existing identity as success (200) WITHOUT
+  // consuming a slot, counting against velocity, or minting a duplicate. This
+  // is discovery Fork C ("already have an agent → it just works") and makes
+  // re-onboarding a lost or reset local binding a safe no-op. Dedup is on
+  // public_key, NOT the name-derived slug — the key, not the display name, is
+  // what uniquely identifies an agent.
+  const existingByKey = await env.DB.prepare(
+    'SELECT axis_id, did, operator_id, status FROM agents WHERE public_key = ?'
+  ).bind(body.publicKey).first();
+  if (existingByKey) {
+    if (existingByKey.operator_id !== operator.id) {
+      return {
+        status: 409,
+        body: { error: { code: 'key_registered_to_other_operator', message: 'This public key is already registered under a different operator.' } }
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        did: existingByKey.did,
+        axis_id: existingByKey.axis_id,
+        operator_id: `axis:${operator.id}:operator`,
+        already_registered: true,
+        status: existingByKey.status
+      }
+    };
+  }
+
   // Velocity cap (Pre-Launch Engineering Brief §3.4): no operator may
   // register more than VELOCITY_LIMIT agents in any rolling
   // VELOCITY_WINDOW_HOURS-hour window, independent of tier. Stops
@@ -134,66 +164,12 @@ export async function handleRegister(body, registrar, env) {
     };
   }
 
-  // C2 (2026-05-08 security review): atomic slot allocation.
-  //
-  // Previously this was a three-step Read→Check→Increment sequence with
-  // no atomicity between the cap check (line 87) and the eventual UPDATE
-  // (line 169). Two concurrent POST /register for the same operator could
-  // both pass the cap check at line 87, both INSERT, both INCREMENT —
-  // operator ends up with max_agents + 1 rows.
-  //
-  // The fix: do the slot allocation BEFORE the INSERT, as a single
-  // UPDATE-with-predicate. SQLite serializes UPDATEs within a row, so
-  // two concurrent attempts at the last free slot can't both succeed.
-  // The UPDATE's predicate (`free_slots_used < free_slots_total`) is
-  // the cap check; meta.changes tells us whether we won the race.
-  //
-  // Two-tier fallback: try free first; if it didn't match, try paid
-  // (with the cap baked into the predicate). Neither matches → 403.
-  //
-  // The INSERT happens AFTER successful slot reservation. If INSERT
-  // later fails (unlikely — agent_id collision was already checked, but
-  // could happen on transient D1 errors), we best-effort decrement the
-  // slot in the catch block at the bottom of this handler. Minor
-  // inconsistency on rare failure is better than the over-allocation
-  // race we had before.
-
-  // First: confirm the slot row exists at all. If not, surface the same
-  // 500 we did before (this would be a fresh operator without an
-  // agent_slots row — schema integrity issue, not a race condition).
-  const slotsExists = await env.DB.prepare(
-    'SELECT 1 FROM agent_slots WHERE operator_id = ?'
-  ).bind(operator.id).first();
-  if (!slotsExists) {
-    return { status: 500, body: { error: { code: 'internal_error', message: 'Agent slot record not found for operator' } } };
-  }
-
-  // Atomic slot allocation: try free, fall through to paid.
-  let tier = null;
-  const freeAttempt = await env.DB.prepare(
-    `UPDATE agent_slots
-        SET free_slots_used = free_slots_used + 1
-      WHERE operator_id = ?
-        AND free_slots_used < free_slots_total`
-  ).bind(operator.id).run();
-  if (freeAttempt.meta?.changes === 1) {
-    tier = 'free';
-  } else {
-    const paidAttempt = await env.DB.prepare(
-      `UPDATE agent_slots
-          SET paid_agents = paid_agents + 1
-        WHERE operator_id = ?
-          AND (max_agents IS NULL OR free_slots_used + paid_agents < max_agents)`
-    ).bind(operator.id).run();
-    if (paidAttempt.meta?.changes === 1) {
-      tier = 'paid';
-    } else {
-      return {
-        status: 403,
-        body: { error: { code: 'slot_limit_reached', message: 'Operator agent quota exhausted' } }
-      };
-    }
-  }
+  // NOTE: atomic slot allocation was MOVED to just before the INSERT (below).
+  // Reserving the slot only after the name-collision and proof checks means a
+  // rejected name (agent_name_taken) or a bad proof returns BEFORE any slot is
+  // held — so those paths can never leak quota (the bug that ate a phantom
+  // 5th slot). The reservation itself is unchanged: a single atomic
+  // UPDATE-with-predicate, still race-safe.
 
   // Derive agent ID from public key
   let agentIdHash;
@@ -204,24 +180,49 @@ export async function handleRegister(body, registrar, env) {
     return { status: 400, body: { error: { code: 'invalid_key', message: 'Failed to process public key' } } };
   }
   const agentName = body.metadata?.name || agentIdHash;
-  const agentId = agentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  const axisId = `axis:${operator.id}:${agentId}`;
+  let agentId = agentName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  let axisId = `axis:${operator.id}:${agentId}`;
   // C1 (spec v0.2 §10.3): v0.2 canonical DID is operator-namespaced.
   // v0.1 form `did:axis:prime:<agent>` remains resolvable for legacy rows
   // (findAgent accepts both via src/utils/did.js parseAxisDid), but every
   // newly-registered agent gets the v0.2 form.
-  const did = buildAxisDidV2('prime', operator.id, agentId);
+  let did = buildAxisDidV2('prime', operator.id, agentId);
 
-  // Check for collisions
-  const existing = await env.DB.prepare(
+  // Name uniqueness (per operator). The public-key dedup above already returned
+  // for the "same key" case, so a collision here means a DIFFERENT key wants a
+  // name whose slug is taken (e.g. a second agent the operator also names
+  // "Cooper"). Default: reject with agent_name_taken so the operator can pick
+  // another name — we do NOT silently rename, because a surprise auto-suffix is
+  // exactly what people dislike. If they explicitly opt in (allowSuffix), we
+  // register under a suffixed slug. Either way, no slot is held yet, so a
+  // rejection here leaks nothing.
+  const collision = await env.DB.prepare(
     'SELECT id FROM agents WHERE axis_id = ? OR did = ?'
   ).bind(axisId, did).first();
-
-  if (existing) {
-    return {
-      status: 409,
-      body: { error: { code: 'agent_already_exists', message: 'Agent ID collision' } }
-    };
+  if (collision) {
+    const suggestedSlug = `${agentId}-${agentIdHash.slice(0, 6).toLowerCase()}`;
+    if (body.allowSuffix) {
+      // Operator saw "that name's taken" and chose to add a suffix rather than
+      // rename. Register under the suffixed slug; display_name is unchanged.
+      agentId = suggestedSlug;
+      axisId = `axis:${operator.id}:${agentId}`;
+      did = buildAxisDidV2('prime', operator.id, agentId);
+    } else {
+      // Names are unique per operator by default. Don't silently rename — tell
+      // the caller so the consent screen can re-prompt (pick another name, or
+      // opt into the suffix). No slot is reserved yet, so this leaks nothing.
+      return {
+        status: 409,
+        body: {
+          error: {
+            code: 'agent_name_taken',
+            message: `You already have an agent named "${agentName}".`,
+            name: agentName,
+            suggested_slug: suggestedSlug,
+          },
+        },
+      };
+    }
   }
 
   // Verify proof of key ownership (if proof provided).
@@ -252,6 +253,44 @@ export async function handleRegister(body, registrar, env) {
       return {
         status: 400,
         body: { error: { code: 'invalid_proof', message: 'Proof of key ownership verification failed' } }
+      };
+    }
+  }
+
+  // Atomic slot allocation (C2, 2026-05-08 security review). Done HERE, after the
+  // name-collision and proof checks, so a rejected registration never leaks a
+  // slot. Single UPDATE-with-predicate: SQLite serializes UPDATEs within a row,
+  // so two concurrent attempts at the last slot can't both win. Try free, fall
+  // through to paid; neither matches → 403. If the INSERT below still fails
+  // (rare — transient D1), the catch releases the slot.
+  const slotsExists = await env.DB.prepare(
+    'SELECT 1 FROM agent_slots WHERE operator_id = ?'
+  ).bind(operator.id).first();
+  if (!slotsExists) {
+    return { status: 500, body: { error: { code: 'internal_error', message: 'Agent slot record not found for operator' } } };
+  }
+  let tier = null;
+  const freeAttempt = await env.DB.prepare(
+    `UPDATE agent_slots
+        SET free_slots_used = free_slots_used + 1
+      WHERE operator_id = ?
+        AND free_slots_used < free_slots_total`
+  ).bind(operator.id).run();
+  if (freeAttempt.meta?.changes === 1) {
+    tier = 'free';
+  } else {
+    const paidAttempt = await env.DB.prepare(
+      `UPDATE agent_slots
+          SET paid_agents = paid_agents + 1
+        WHERE operator_id = ?
+          AND (max_agents IS NULL OR free_slots_used + paid_agents < max_agents)`
+    ).bind(operator.id).run();
+    if (paidAttempt.meta?.changes === 1) {
+      tier = 'paid';
+    } else {
+      return {
+        status: 403,
+        body: { error: { code: 'slot_limit_reached', message: 'Operator agent quota exhausted' } }
       };
     }
   }
