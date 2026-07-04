@@ -7,7 +7,7 @@
  * Public endpoints (resolve, verify, revocation) require no auth.
  */
 
-import { handleRegister } from './routes/register.js';
+import { handleRegister, handleUpdateAgent } from './routes/register.js';
 import { handleResolve, handleGetAgent, extractPresentationContext } from './routes/resolve.js';
 import { handleVerifyIdentity, handleVerifyAIT, handleVerifySignature } from './routes/verify.js';
 import { handleRevocation, handleDeactivateAgent, forceDeactivateAgent } from './routes/revocation.js';
@@ -449,11 +449,20 @@ export default {
       // PATCH /agents/:agent_id
       if (method === 'PATCH' && path.match(/^\/agents\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/agents/')[1]);
-        const body = await request.json();
-        // TODO: implement handleUpdateAgent (must enforce ownership scope when implemented).
-        return addCors(jsonResponse(501, {
-          error: { code: 'not_implemented', message: 'Agent updates coming soon' }
-        }));
+        const body = await request.json().catch(() => ({}));
+        const result = await handleUpdateAgent(agentId, body, registrar, env);
+        if (result.status === 200) {
+          ctx.waitUntil(logAudit(env, {
+            action: 'update_agent',
+            actor: registrar.id,
+            target: agentId,
+            registrar_id: registrar.id,
+            target_registrar_id: registrar.id,
+            details: { fields: Object.keys(body || {}) },
+            ip_address: request.headers.get('cf-connecting-ip')
+          }));
+        }
+        return addCors(jsonResponse(result.status, result.body));
       }
 
       // DELETE /agents/:agent_id
