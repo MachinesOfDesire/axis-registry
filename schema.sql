@@ -163,12 +163,17 @@ CREATE INDEX IF NOT EXISTS idx_delegations_status ON delegations(status);
 -- AGENT SLOTS
 -- Tracks free/paid agent allocation per operator
 -- ============================================
+-- Values follow the locked pricing model (canonical 2026-06-16): email tier
+-- 10/10, domain tier 100/100, registrar verification push raises max_agents
+-- (default 1000). Code ALWAYS binds these explicitly (src/routes/operators.js
+-- TIER_CAPS); the column defaults below are never exercised on the write paths
+-- and are set to 0 as a safe floor.
 CREATE TABLE IF NOT EXISTS agent_slots (
   operator_id TEXT PRIMARY KEY,
-  free_slots_total INTEGER NOT NULL DEFAULT 3,  -- 3 for domain verified, 0 for email/KYB
+  free_slots_total INTEGER NOT NULL DEFAULT 0,  -- code binds: 10 (email), 100 (domain), 0 (KYB via verification push)
   free_slots_used INTEGER NOT NULL DEFAULT 0,
   paid_agents INTEGER NOT NULL DEFAULT 0,
-  max_agents INTEGER,                           -- null = unlimited (for KYB tiers), 5 for email tier
+  max_agents INTEGER,                           -- hard cap; code binds: 10 (email), 100 (domain), 1000 default on verification push. NULL = unlimited (legacy/explicit registrar grant only)
   FOREIGN KEY (operator_id) REFERENCES operators(id)
 );
 
