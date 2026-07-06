@@ -11,11 +11,11 @@ import { deriveOperatorSlug } from '../utils/operator-slug.js';
 import { verifyCanonicalProof } from '../utils/proof.js';
 
 /**
- * Free-tier agent caps per the locked pricing model (canonical 2026-06-16,
- * confirmed 2026-07-03):
+ * Free-tier agent caps per the decoupled pricing model (2026-07-04; supersedes
+ * the earlier 2026-06-16 10/100 figures):
  *
- *   Single Operator (email-verified)  → 10 agents
- *   Team (domain-verified)            → 100 agents
+ *   Single Operator (email-verified)  → 25 agents
+ *   Team (domain-verified)            → 250 agents
  *   Verified (registrar quota push)   → 1000 agents (VERIFIED_DEFAULT_MAX_AGENTS)
  *
  * No per-agent fees. These are HARD caps: at the free tiers max_agents equals
@@ -24,8 +24,8 @@ import { verifyCanonicalProof } from '../utils/proof.js';
  * more agents. Migration 0009 reconciles pre-existing rows to these values.
  */
 export const TIER_CAPS = {
-  email: { freeSlots: 10, maxAgents: 10 },
-  domain: { freeSlots: 100, maxAgents: 100 },
+  email: { freeSlots: 25, maxAgents: 25 },
+  domain: { freeSlots: 250, maxAgents: 250 },
 };
 
 // Default enforced cap set by the registrar's Verified Identity quota push

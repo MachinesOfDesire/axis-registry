@@ -1,9 +1,9 @@
 /**
- * Free-tier agent caps — locked pricing model (canonical 2026-06-16,
- * confirmed 2026-07-03):
+ * Free-tier agent caps — decoupled pricing model (2026-07-04; supersedes the
+ * earlier 2026-06-16 10/100 figures):
  *
- *   Single Operator (email-verified)  → 10 agents (hard cap)
- *   Team (domain-verified)            → 100 agents (hard cap)
+ *   Single Operator (email-verified)  → 25 agents (hard cap)
+ *   Team (domain-verified)            → 250 agents (hard cap)
  *   Verified (registrar quota push)   → 1000 agents (default)
  *
  * Hard caps == free caps at both free tiers: no per-agent fees, no unlimited
@@ -11,13 +11,13 @@
  *
  * Covers:
  *   - POST /operators/verify-domain (the only operator-creation path) writes
- *     the new agent_slots values: email 10/10, domain 100/100.
+ *     the new agent_slots values: email 25/25, domain 250/250.
  *   - A repeat signup never disturbs an existing slots row (in particular a
  *     registrar-pushed max_agents=1000 is not lowered).
  *   - POST /operators/:id/verification still defaults max_agents to 1000 and
  *     preserves free_slots_total.
- *   - Migration 0009 upgrades legacy rows (domain 3/NULL → 100/100, email
- *     0/5 → 10/10), never lowers an existing higher cap, and is idempotent.
+ *   - Migration 0009 upgrades legacy rows (domain 3/NULL → 250/250, email
+ *     0/5 → 25/25), never lowers an existing higher cap, and is idempotent.
  *
  * Handlers: src/routes/operators.js (TIER_CAPS is the single source of truth)
  * Migration: migrations/0009_free_tier_caps_locked_pricing.sql
@@ -75,9 +75,9 @@ async function applyMigration0009(harness) {
 // Sanity: the constants themselves encode the locked pricing model.
 // ---------------------------------------------------------------------------
 
-test('caps: TIER_CAPS matches the locked pricing model (10/100 hard caps, 1000 verified default)', () => {
-  assert.deepEqual(TIER_CAPS.email, { freeSlots: 10, maxAgents: 10 });
-  assert.deepEqual(TIER_CAPS.domain, { freeSlots: 100, maxAgents: 100 });
+test('caps: TIER_CAPS matches the locked pricing model (25/250 hard caps, 1000 verified default)', () => {
+  assert.deepEqual(TIER_CAPS.email, { freeSlots: 25, maxAgents: 25 });
+  assert.deepEqual(TIER_CAPS.domain, { freeSlots: 250, maxAgents: 250 });
   assert.equal(VERIFIED_DEFAULT_MAX_AGENTS, 1000);
   // Hard cap == free cap at both free tiers: no paid fallthrough headroom.
   assert.equal(TIER_CAPS.email.freeSlots, TIER_CAPS.email.maxAgents);
@@ -88,7 +88,7 @@ test('caps: TIER_CAPS matches the locked pricing model (10/100 hard caps, 1000 v
 // Creation path (POST /operators/verify-domain)
 // ---------------------------------------------------------------------------
 
-test('caps: new email-tier operator gets free_slots_total=10, max_agents=10', async (t) => {
+test('caps: new email-tier operator gets free_slots_total=25, max_agents=25', async (t) => {
   const harness = await createHarness();
   t.after(() => harness.dispose());
 
@@ -98,13 +98,13 @@ test('caps: new email-tier operator gets free_slots_total=10, max_agents=10', as
 
   const slots = await getSlots(harness, res.body.operator_id);
   assert.ok(slots, 'an agent_slots row must be created');
-  assert.equal(slots.free_slots_total, 10, 'email tier: 10 free slots');
-  assert.equal(slots.max_agents, 10, 'email tier: hard cap 10 (== free cap, no fallthrough)');
+  assert.equal(slots.free_slots_total, 25, 'email tier: 25 free slots');
+  assert.equal(slots.max_agents, 25, 'email tier: hard cap 25 (== free cap, no fallthrough)');
   assert.equal(slots.free_slots_used, 0);
   assert.equal(slots.paid_agents, 0);
 });
 
-test('caps: new domain-tier operator gets free_slots_total=100, max_agents=100 (no unlimited)', async (t) => {
+test('caps: new domain-tier operator gets free_slots_total=250, max_agents=250 (no unlimited)', async (t) => {
   const harness = await createHarness();
   t.after(() => harness.dispose());
 
@@ -118,8 +118,8 @@ test('caps: new domain-tier operator gets free_slots_total=100, max_agents=100 (
 
   const slots = await getSlots(harness, res.body.operator_id);
   assert.ok(slots, 'an agent_slots row must be created');
-  assert.equal(slots.free_slots_total, 100, 'domain tier: 100 free slots');
-  assert.equal(slots.max_agents, 100, 'domain tier: hard cap 100, NOT NULL/unlimited');
+  assert.equal(slots.free_slots_total, 250, 'domain tier: 250 free slots');
+  assert.equal(slots.max_agents, 250, 'domain tier: hard cap 250, NOT NULL/unlimited');
 });
 
 test('caps: repeat signup does not disturb an existing slots row (registrar-pushed 1000 preserved)', async (t) => {
@@ -144,7 +144,7 @@ test('caps: repeat signup does not disturb an existing slots row (registrar-push
   const slots = await getSlots(harness, opId);
   assert.equal(slots.max_agents, 1000, 'repeat signup must never lower a pushed cap');
   assert.equal(slots.free_slots_used, 4, 'repeat signup must not reset usage counters');
-  assert.equal(slots.free_slots_total, 10, 'free slot total untouched');
+  assert.equal(slots.free_slots_total, 25, 'free slot total untouched');
 });
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ test('caps: verification push defaults max_agents to 1000 and preserves free slo
 
   const slots = await getSlots(harness, opId);
   assert.equal(slots.max_agents, 1000, 'push raises the enforced cap to 1000');
-  assert.equal(slots.free_slots_total, 100, 'push preserves the domain-tier free slot count');
+  assert.equal(slots.free_slots_total, 250, 'push preserves the domain-tier free slot count');
 });
 
 // ---------------------------------------------------------------------------
@@ -218,19 +218,19 @@ test('migration 0009: upgrades legacy rows, never lowers higher caps, idempotent
   await applyMigration0009(harness);
 
   let slots = await getSlots(harness, legacyDomain.id);
-  assert.equal(slots.free_slots_total, 100, 'legacy domain: free 3 → 100');
-  assert.equal(slots.max_agents, 100, 'legacy domain: max NULL → 100 (unlimited fallthrough removed)');
+  assert.equal(slots.free_slots_total, 250, 'legacy domain: free 3 → 250');
+  assert.equal(slots.max_agents, 250, 'legacy domain: max NULL → 250 (unlimited fallthrough removed)');
 
   slots = await getSlots(harness, legacyEmail.id);
-  assert.equal(slots.free_slots_total, 10, 'legacy email: free 0 → 10');
-  assert.equal(slots.max_agents, 10, 'legacy email: max 5 → 10');
+  assert.equal(slots.free_slots_total, 25, 'legacy email: free 0 → 25');
+  assert.equal(slots.max_agents, 25, 'legacy email: max 5 → 25');
 
   slots = await getSlots(harness, pushedDomain.id);
-  assert.equal(slots.free_slots_total, 100, 'pushed domain: free still upgraded to 100');
+  assert.equal(slots.free_slots_total, 250, 'pushed domain: free still upgraded to 250');
   assert.equal(slots.max_agents, 1000, 'pushed domain: max_agents 1000 must NOT be lowered');
 
   slots = await getSlots(harness, emailNullCap.id);
-  assert.equal(slots.free_slots_total, 10, 'email NULL-cap: free still upgraded to 10');
+  assert.equal(slots.free_slots_total, 25, 'email NULL-cap: free still upgraded to 25');
   assert.equal(slots.max_agents, null, 'email NULL-cap: explicit unlimited grant left untouched');
 
   slots = await getSlots(harness, kyb.id);
@@ -241,8 +241,8 @@ test('migration 0009: upgrades legacy rows, never lowers higher caps, idempotent
   await applyMigration0009(harness);
 
   slots = await getSlots(harness, legacyDomain.id);
-  assert.equal(slots.free_slots_total, 100);
-  assert.equal(slots.max_agents, 100);
+  assert.equal(slots.free_slots_total, 250);
+  assert.equal(slots.max_agents, 250);
   slots = await getSlots(harness, pushedDomain.id);
   assert.equal(slots.max_agents, 1000, 'second run must not lower the pushed cap');
   slots = await getSlots(harness, emailNullCap.id);
