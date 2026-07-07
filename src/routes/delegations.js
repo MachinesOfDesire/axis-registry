@@ -13,6 +13,7 @@
 import { findAgent } from './resolve.js';
 import { generateCredentialId } from '../utils/crypto.js';
 import { validateScopeSet, isScopeSubset, intersectScopes } from '../utils/scope.js';
+import { classifyScope } from '../utils/scope-vocab.js';
 import { verifyDelegationProof } from '../utils/proof.js';
 import { parseAxisDid } from '../utils/did.js';
 
@@ -505,6 +506,23 @@ export async function handleCreateDelegation(body, registrar, env) {
       status: 400,
       body: { error: { code: 'invalid_scope', message: scopeCheck.reason } }
     };
+  }
+
+  // Enforce the closed scope NAMESPACE (v0.3 §4.5; §13 conformance criterion
+  // 8) on top of the grammar check: each scope must be either a recognized
+  // standard-vocabulary scope or a vendor-prefixed custom scope
+  // (`x-<vendor>:...`). Unprefixed non-standard scopes — including
+  // unrecognized actions under a reserved standard domain — are rejected.
+  // This gate applies to NEW writes only; delegations already stored under
+  // earlier rules are untouched and continue to resolve.
+  for (const s of scope) {
+    const { layer, reason } = classifyScope(s);
+    if (layer === 'invalid') {
+      return {
+        status: 400,
+        body: { error: { code: 'invalid_scope', message: `Scope '${s}' is not permitted: ${reason}. Use a standard scope or a vendor-prefixed custom scope (x-<vendor>:...); see /.well-known/axis-scopes for the standard vocabulary.` } }
+      };
+    }
   }
 
   // If parent credential exists, validate attenuation

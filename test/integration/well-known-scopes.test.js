@@ -9,6 +9,7 @@
  *   - content:comment and commerce:purchase present with standard: true
  *   - platform_id derived from REGISTRY_BASE_URL (harness sets 'localhost')
  *   - edge-cacheable for unauthed callers
+ *   - version advertisement consistent with /.well-known/axis-access
  */
 
 import { test } from 'node:test';
@@ -40,6 +41,27 @@ test('well-known/axis-scopes: 200, v0.3, non-empty scopes, known scopes present'
   const purchase = byScope.get('commerce:purchase');
   assert.ok(purchase, 'commerce:purchase must be present');
   assert.equal(purchase.standard, true);
+});
+
+test('well-known discovery: axis-access and axis-scopes advertise the same protocol version', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const accessRes = await harness.fetch('/.well-known/axis-access', { method: 'GET' });
+  assert.equal(accessRes.status, 200);
+  const access = await accessRes.json();
+
+  const scopesRes = await harness.fetch('/.well-known/axis-scopes', { method: 'GET' });
+  assert.equal(scopesRes.status, 200);
+  const scopes = await scopesRes.json();
+
+  assert.equal(access.axis_version, '0.3', 'axis-access must advertise the current protocol version');
+  assert.equal(scopes.axis_version, '0.3', 'axis-scopes must advertise the current protocol version');
+  assert.equal(
+    access.axis_version,
+    scopes.axis_version,
+    'discovery endpoints must never advertise diverging protocol versions',
+  );
 });
 
 test('well-known/axis-scopes: edge-cacheable for unauthed callers', async (t) => {

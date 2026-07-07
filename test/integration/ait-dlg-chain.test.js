@@ -50,7 +50,7 @@ test('P0-2: resolves a signed dlg chain and returns effective scope', async (t) 
   const { harness, registrar, operator, issuer, delegate } = await setup();
   t.after(() => harness.dispose());
 
-  const doc = dcDoc({ issuer, delegate, operator, scope: ['article:draft'] });
+  const doc = dcDoc({ issuer, delegate, operator, scope: ['x-test:article:draft'] });
   const r = await postDelegation(harness, registrar, await buildSignedDelegation(issuer.keypair, doc));
   assert.equal(r.status, 201, await r.text());
 
@@ -60,7 +60,7 @@ test('P0-2: resolves a signed dlg chain and returns effective scope', async (t) 
   assert.equal(body.delegation_valid, true);
   assert.equal(body.delegation_bound_to_agent, true);
   assert.equal(body.delegation_depth, 1);
-  assert.deepEqual(body.effective_scope, ['article:draft']);
+  assert.deepEqual(body.effective_scope, ['x-test:article:draft']);
 });
 
 test('P0-2: a legacy unsigned dlg still resolves (enforcement off): valid chain, effective scope', async (t) => {
@@ -70,7 +70,7 @@ test('P0-2: a legacy unsigned dlg still resolves (enforcement off): valid chain,
   // Legacy create (no proof) — issued_to the delegate.
   const r = await postDelegation(harness, registrar, {
     issued_by: issuer.axisId, issued_to: delegate.axisId, root_operator: operator.id,
-    scope: ['article:draft'], expires: futureISO(30),
+    scope: ['x-test:article:draft'], expires: futureISO(30),
   });
   const created = await r.json();
   assert.equal(r.status, 201, JSON.stringify(created));
@@ -78,14 +78,14 @@ test('P0-2: a legacy unsigned dlg still resolves (enforcement off): valid chain,
   const body = await verifyToken(harness, delegate.keypair, { iss: delegate.axisId, sub: delegate.axisId, dlg: created.id });
   assert.equal(body.delegation_resolved, true);
   assert.equal(body.delegation_valid, true); // enforcement off → proof not required
-  assert.deepEqual(body.effective_scope, ['article:draft']);
+  assert.deepEqual(body.effective_scope, ['x-test:article:draft']);
 });
 
 test('P0-2: a chain whose leaf is issued to a different agent is not bound', async (t) => {
   const { harness, registrar, operator, issuer, delegate } = await setup();
   t.after(() => harness.dispose());
 
-  const doc = dcDoc({ issuer, delegate, operator, scope: ['article:draft'] });
+  const doc = dcDoc({ issuer, delegate, operator, scope: ['x-test:article:draft'] });
   await postDelegation(harness, registrar, await buildSignedDelegation(issuer.keypair, doc));
 
   // The ISSUER presents an AIT claiming the DC that was issued to the DELEGATE.
@@ -114,7 +114,7 @@ test('P0-2: effective scope is the chain intersection (wildcard parent narrows t
     axis_version: '0.2', type: 'DelegationCredential',
     id: `dc:${operator.id}:parent-${Math.floor(Date.now() / 1000)}`,
     issued_by: `axis:${operator.id}:operator`, issued_to: issuer.axisId, root_operator: operator.id,
-    scope: ['article:*'], created: nowISO(), expires: futureISO(30), revocable: true,
+    scope: ['x-test:article:*'], created: nowISO(), expires: futureISO(30), revocable: true,
   };
   // Parent is issued BY the operator; the operator has no registered key here,
   // so it resolves unsigned/legacy. Use the legacy create path for the parent.
@@ -125,7 +125,7 @@ test('P0-2: effective scope is the chain intersection (wildcard parent narrows t
   const parentCreated = await rp.json();
   assert.equal(rp.status, 201, JSON.stringify(parentCreated));
 
-  const child = dcDoc({ issuer, delegate, operator, scope: ['article:draft'] });
+  const child = dcDoc({ issuer, delegate, operator, scope: ['x-test:article:draft'] });
   child.parent_credential_id = parentCreated.id;
   const rc = await postDelegation(harness, registrar, await buildSignedDelegation(issuer.keypair, child));
   const childCreated = await rc.json();
@@ -133,5 +133,5 @@ test('P0-2: effective scope is the chain intersection (wildcard parent narrows t
 
   const body = await verifyToken(harness, delegate.keypair, { iss: delegate.axisId, sub: delegate.axisId, dlg: child.id });
   assert.equal(body.delegation_depth, 2);
-  assert.deepEqual(body.effective_scope, ['article:draft']); // article:* ∩ article:draft
+  assert.deepEqual(body.effective_scope, ['x-test:article:draft']); // x-test:article:* ∩ x-test:article:draft
 });

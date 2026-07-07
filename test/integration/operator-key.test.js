@@ -151,7 +151,7 @@ test('#2 payoff: an operator-signed root DC reports signatureValid:true once the
     issued_by: `axis:${operator.id}:operator`,
     issued_to: agent.axisId,
     root_operator: operator.id,
-    scope: ['article:draft'],
+    scope: ['x-test:article:draft'],
     created: nowISO(),
     expires: futureISO(30),
     revocable: true,
