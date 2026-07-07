@@ -2,7 +2,10 @@
  * Delegation Endpoints
  *
  * GET /delegations/:id — Public, get a delegation record
- * GET /delegations/:agent_id/chain — Public, verify delegation chain
+ * GET /delegations/:id/chain — Public, verify delegation chain. `:id` accepts
+ *   either an AGENT identifier (walk the agent's newest active chain) or a
+ *   DELEGATION credential id (walk and pin the verdict to that credential —
+ *   the form carried in an AIT's `dlg` claim). See handleVerifyChain.
  * POST /delegations — Registrar-authenticated, create delegation
  * DELETE /delegations/:id — Registrar-authenticated, revoke delegation
  */
@@ -93,16 +96,63 @@ export async function handleGetDelegation(delegationId, env) {
   };
 }
 
-export async function handleVerifyChain(agentIdentifier, env) {
-  // Find all delegations where this agent is the delegatee
-  const agent = await findAgent(agentIdentifier, env);
-  if (!agent) {
-    return {
-      status: 404,
-      body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
-    };
+/**
+ * GET /delegations/:id/chain — dual-mode chain verification.
+ *
+ * The :id parameter accepts BOTH identifier forms a verifier may hold:
+ *
+ *   1. An AGENT identifier (AXIS ID, DID, or bare slug) — original behavior,
+ *      unchanged: find the newest active delegation issued to that agent and
+ *      walk issuer-to-issuer back to the root operator.
+ *
+ *   2. A DELEGATION credential id — the form an AIT's `dlg` claim carries
+ *      (§4.3). The chain is resolved upward from THAT credential via
+ *      `parent_credential_id`, and the verdict is PINNED to it: `chainValid`
+ *      reflects only the named credential's chain, and the response adds a
+ *      top-level `delegation` block (id, scope, parties, status) plus the
+ *      chain's `effective_scope`, so a verifier can enforce against exactly
+ *      what the presented token named rather than the union of all the
+ *      agent's delegations.
+ *
+ * Detection: ids with the `dc:` prefix (the registry-generated credential-id
+ * form) are treated as delegation ids outright; other identifiers try agent
+ * resolution first (back-compat) and then fall back to a direct
+ * delegations-table lookup (issuer-chosen ids on signed submissions may use
+ * any scheme). Unknown `dc:`-prefixed ids 404 with `delegation_not_found`;
+ * other unknown identifiers keep the original `agent_not_found`.
+ */
+export async function handleVerifyChain(identifier, env) {
+  // Registry-generated credential ids always carry the `dc:` prefix, and no
+  // agent identifier form does (axis:…, did:axis:…, or a colon-free slug),
+  // so the prefix is an unambiguous delegation-id signal.
+  if (typeof identifier === 'string' && identifier.startsWith('dc:')) {
+    return verifyChainForDelegationId(identifier, env);
   }
 
+  const agent = await findAgent(identifier, env);
+  if (agent) {
+    return verifyChainForAgent(agent, env);
+  }
+
+  // Not an agent: issuer-chosen delegation ids (§4.4 Option A signed
+  // submissions) may use any id scheme, so try a direct credential lookup
+  // before giving up. Unknown non-`dc:` identifiers keep the original
+  // agent_not_found so existing agent-form callers see no change.
+  const dc = await env.DB.prepare(
+    'SELECT 1 FROM delegations WHERE id = ?'
+  ).bind(identifier).first();
+  if (dc) {
+    return verifyChainForDelegationId(identifier, env);
+  }
+
+  return {
+    status: 404,
+    body: { error: { code: 'agent_not_found', message: 'Agent not found' } }
+  };
+}
+
+/** Agent-identifier form of GET /delegations/:id/chain (original behavior). */
+async function verifyChainForAgent(agent, env) {
   // Walk the chain from this agent back to root
   const chain = [];
   let currentId = agent.axis_id;
@@ -185,18 +235,6 @@ export async function handleVerifyChain(agentIdentifier, env) {
     currentDid = delegation.issued_by; // may or may not be a DID
   }
 
-  // Get root operator info
-  let rootOperatorInfo = null;
-  if (rootOperator) {
-    const operatorNamespace = rootOperator.replace('axis:', '').replace(':operator', '');
-    const operator = await env.DB.prepare(
-      'SELECT domain, domain_verified FROM operators WHERE id = ?'
-    ).bind(operatorNamespace).first();
-    if (operator) {
-      rootOperatorInfo = { domain: operator.domain, verified: Boolean(operator.domain_verified) };
-    }
-  }
-
   return {
     status: 200,
     body: {
@@ -205,7 +243,69 @@ export async function handleVerifyChain(agentIdentifier, env) {
       chainValid,
       chainDepth: chain.length,
       chain,
-      rootOperator: rootOperatorInfo,
+      rootOperator: await getRootOperatorInfo(rootOperator, env),
+      verifiedAt: new Date().toISOString()
+    }
+  };
+}
+
+/** Public root-operator info (domain + verification) for chain responses. */
+async function getRootOperatorInfo(rootOperator, env) {
+  if (!rootOperator) return null;
+  const operatorNamespace = rootOperator.replace('axis:', '').replace(':operator', '');
+  const operator = await env.DB.prepare(
+    'SELECT domain, domain_verified FROM operators WHERE id = ?'
+  ).bind(operatorNamespace).first();
+  if (!operator) return null;
+  return { domain: operator.domain, verified: Boolean(operator.domain_verified) };
+}
+
+/**
+ * Delegation-id form of GET /delegations/:id/chain: resolve the chain upward
+ * from the named credential and pin the verdict to it. Same top-level shape
+ * as the agent form, plus an explicit `delegation` block naming the pinned
+ * credential and the chain's `effective_scope` (root-to-leaf intersection).
+ */
+async function verifyChainForDelegationId(delegationId, env) {
+  const dc = await env.DB.prepare(
+    'SELECT * FROM delegations WHERE id = ?'
+  ).bind(delegationId).first();
+  if (!dc) {
+    return {
+      status: 404,
+      body: { error: { code: 'delegation_not_found', message: 'Delegation not found' } }
+    };
+  }
+
+  const resolved = await resolveChainFromCredential(dc.id, env);
+
+  // Best-effort delegatee resolution so the response keeps the agent-form's
+  // top-level `agent` / `axis_id` fields. A delegation may name a delegatee
+  // that is not a registered agent; fall back to the raw identifier.
+  const delegatee = await findAgent(dc.issued_to, env);
+
+  return {
+    status: 200,
+    body: {
+      agent: delegatee ? delegatee.did : dc.issued_to,
+      axis_id: delegatee ? delegatee.axis_id : null,
+      // Pinning block: exactly which credential this verdict is about. A
+      // verifier holding a token's `dlg` claim should enforce against this
+      // scope (or `effective_scope`), never the union of the delegatee's
+      // other delegations.
+      delegation: {
+        id: dc.id,
+        scope: JSON.parse(dc.scope),
+        issued_by: dc.issued_by,
+        issued_to: dc.issued_to,
+        status: dc.status,
+        expires: dc.expires_at
+      },
+      effective_scope: resolved.effective_scope,
+      chainValid: resolved.valid,
+      chainDepth: resolved.depth,
+      chain: resolved.chain,
+      rootOperator: await getRootOperatorInfo(resolved.root_operator || dc.root_operator, env),
       verifiedAt: new Date().toISOString()
     }
   };
@@ -243,7 +343,8 @@ export async function resolveChainFromCredential(credentialId, env) {
     if (!dc) { valid = false; break; } // dangling parent reference
 
     if (dc.status !== 'active') valid = false;
-    if (new Date(dc.expires_at) < now) valid = false;
+    const expired = new Date(dc.expires_at) < now;
+    if (expired) valid = false;
     if (dc.created_at && new Date(dc.created_at) > now) valid = false;
 
     if (rootOperator === null) rootOperator = dc.root_operator;
@@ -264,6 +365,7 @@ export async function resolveChainFromCredential(credentialId, env) {
       to: dc.issued_to,
       scope: JSON.parse(dc.scope),
       signatureValid,
+      expired,
       status: dc.status,
     });
     currentId = dc.parent_credential_id;
