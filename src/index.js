@@ -300,10 +300,12 @@ export default {
         return addCors(jsonResponse(result.status, result.body));
       }
 
-      // GET /delegations/:id/chain
+      // GET /delegations/:id/chain — :id accepts an agent identifier (walk
+      // the agent's chain) or a delegation credential id (pin to that
+      // credential — the form in an AIT's `dlg` claim). See handleVerifyChain.
       if (method === 'GET' && path.match(/^\/delegations\/(.+)\/chain$/)) {
-        const agentId = decodeURIComponent(path.match(/^\/delegations\/(.+)\/chain$/)[1]);
-        const result = await handleVerifyChain(agentId, env);
+        const identifier = decodeURIComponent(path.match(/^\/delegations\/(.+)\/chain$/)[1]);
+        const result = await handleVerifyChain(identifier, env);
         return addCors(jsonResponse(result.status, result.body));
       }
       // GET /delegations/:id
