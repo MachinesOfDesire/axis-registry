@@ -33,7 +33,7 @@ async function setup(opts = {}) {
   return { harness, registrar, operator, editor, researcher };
 }
 
-function dcDoc({ editor, researcher, operator, scope = ['article:draft'] }) {
+function dcDoc({ editor, researcher, operator, scope = ['x-test:article:draft'] }) {
   return {
     axis_version: '0.2',
     type: 'DelegationCredential',
@@ -89,9 +89,9 @@ test('P0-1: rejects a signed delegation tampered after signing', async (t) => {
   const { harness, registrar, operator, editor, researcher } = await setup();
   t.after(() => harness.dispose());
 
-  const doc = dcDoc({ editor, researcher, operator, scope: ['article:draft'] });
+  const doc = dcDoc({ editor, researcher, operator, scope: ['x-test:article:draft'] });
   const signed = await buildSignedDelegation(editor.keypair, doc);
-  signed.scope = ['article:draft', 'article:publish']; // widen scope after signing
+  signed.scope = ['x-test:article:draft', 'x-test:article:publish']; // widen scope after signing
   const res = await postDelegation(harness, registrar, signed);
   assert.equal(res.status, 400);
   const json = await res.json();
@@ -107,7 +107,7 @@ test('P0-1: legacy unsigned delegation still works when enforcement is OFF (chai
     issued_by: editor.axisId,
     issued_to: researcher.axisId,
     root_operator: operator.id,
-    scope: ['article:draft'],
+    scope: ['x-test:article:draft'],
     expires: futureISO(30),
   });
   assert.equal(res.status, 201, await res.text());
@@ -127,7 +127,7 @@ test('P0-1: with enforcement ON, an unsigned delegation is refused at create', a
     issued_by: editor.axisId,
     issued_to: researcher.axisId,
     root_operator: operator.id,
-    scope: ['article:draft'],
+    scope: ['x-test:article:draft'],
     expires: futureISO(30),
   });
   assert.equal(res.status, 400);

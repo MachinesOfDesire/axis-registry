@@ -388,7 +388,7 @@ test('BOLA: POST /delegations — registrar B cannot issue delegation on behalf 
       issued_by: agentA.axis_id,                  // A's agent
       issued_to: 'axis:somewhere:downstream',
       root_operator: `axis:${operatorA.id}:operator`,
-      scope: ['scope:test'],
+      scope: ['x-test:test'],
       expires: new Date(Date.now() + 3600 * 1000).toISOString(),
     }),
   });
@@ -430,7 +430,7 @@ test('BOLA: POST /delegations with parent_credential_id — registrar B cannot c
       issued_by: agentA.axis_id,
       issued_to: 'axis:downstream:1',
       root_operator: `axis:${operatorA.id}:operator`,
-      scope: ['scope:a'],
+      scope: ['x-test:a'],
       expires: new Date(Date.now() + 3600 * 1000).toISOString(),
     }),
   });
@@ -451,7 +451,7 @@ test('BOLA: POST /delegations with parent_credential_id — registrar B cannot c
       issued_to: 'axis:downstream:2',
       root_operator: `axis:${operatorA.id}:operator`,
       parent_credential_id: parent.id,
-      scope: ['scope:a'],
+      scope: ['x-test:a'],
       expires: new Date(Date.now() + 3600 * 1000).toISOString(),
     }),
   });
@@ -484,7 +484,7 @@ test('BOLA: DELETE /delegations/:id — registrar B cannot revoke registrar A\'s
       issued_by: agentA.axis_id,
       issued_to: 'axis:downstream:1',
       root_operator: `axis:${operatorA.id}:operator`,
-      scope: ['scope:a'],
+      scope: ['x-test:a'],
       expires: new Date(Date.now() + 3600 * 1000).toISOString(),
     }),
   });

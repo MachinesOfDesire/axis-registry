@@ -77,7 +77,7 @@ async function seedDelegation(harness, registrar, operator, issuedByAxisId) {
       issued_by: issuedByAxisId,
       issued_to: 'axis:downstream:1',
       root_operator: `axis:${operator.id}:operator`,
-      scope: ['scope:a'],
+      scope: ['x-test:a'],
       expires: new Date(Date.now() + 3600 * 1000).toISOString(),
     }),
   });

@@ -86,14 +86,14 @@ test('Chain by delegation id: pins to the named credential when the agent holds 
   // Two independent delegations to the SAME delegatee with different scopes.
   const dcA = await createDelegation(harness, registrar, {
     issued_by: issuer.axis_id, issued_to: delegate.axis_id, root_operator: root,
-    scope: ['article:draft'], expires: futureISO(30),
+    scope: ['x-test:article:draft'], expires: futureISO(30),
   });
   const dcB = await createDelegation(harness, registrar, {
     issued_by: issuer.axis_id, issued_to: delegate.axis_id, root_operator: root,
-    scope: ['article:publish'], expires: futureISO(30),
+    scope: ['x-test:article:publish'], expires: futureISO(30),
   });
 
-  for (const [dc, scope] of [[dcA, ['article:draft']], [dcB, ['article:publish']]]) {
+  for (const [dc, scope] of [[dcA, ['x-test:article:draft']], [dcB, ['x-test:article:publish']]]) {
     const res = await getChain(harness, dc.id);
     assert.equal(res.status, 200);
     const body = await res.json();
@@ -123,7 +123,7 @@ test('Chain by agent identifier: original behavior unchanged (no pinning block)'
   await createDelegation(harness, registrar, {
     issued_by: issuer.axis_id, issued_to: delegate.axis_id,
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['article:draft'], expires: futureISO(30),
+    scope: ['x-test:article:draft'], expires: futureISO(30),
   });
 
   const res = await getChain(harness, delegate.axis_id);
@@ -160,7 +160,7 @@ test('Chain by delegation id: revoked credential resolves but reports invalid', 
   const dc = await createDelegation(harness, registrar, {
     issued_by: issuer.axis_id, issued_to: delegate.axis_id,
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['article:draft'], expires: futureISO(30),
+    scope: ['x-test:article:draft'], expires: futureISO(30),
   });
 
   const del = await harness.fetch(`/delegations/${encodeURIComponent(dc.id)}`, {
@@ -195,7 +195,7 @@ test('Chain by delegation id: expired credential resolves but reports invalid', 
      VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, 1, 'active', '{}', ?)`
   ).bind(
     id, issuer.axis_id, delegate.axis_id, `axis:${operator.id}:operator`,
-    JSON.stringify(['article:draft']),
+    JSON.stringify(['x-test:article:draft']),
     new Date(Date.now() - 2 * DAY_MS).toISOString(),
     new Date(Date.now() - DAY_MS).toISOString(),
     registrar.id,
@@ -225,7 +225,7 @@ test('Chain by delegation id: issuer-chosen id without dc: prefix resolves via t
     axis_version: '0.2', type: 'DelegationCredential',
     id: 'urn:example:pinned-credential-1',
     issued_by: issuer.axisId, issued_to: delegate.axisId, root_operator: operator.id,
-    scope: ['article:draft'], created: new Date().toISOString(),
+    scope: ['x-test:article:draft'], created: new Date().toISOString(),
     expires: futureISO(30), revocable: true,
   };
   const post = await harness.fetch('/delegations', {
@@ -239,7 +239,7 @@ test('Chain by delegation id: issuer-chosen id without dc: prefix resolves via t
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.delegation.id, doc.id);
-  assert.deepEqual(body.delegation.scope, ['article:draft']);
+  assert.deepEqual(body.delegation.scope, ['x-test:article:draft']);
   assert.equal(body.chainValid, true);
   assert.equal(body.chain[0].signatureValid, true, 'signed credential proof must verify');
 });
@@ -253,12 +253,12 @@ test('Chain by delegation id: multi-link chain walks parents with intersected ef
 
   const parent = await createDelegation(harness, registrar, {
     issued_by: issuer.axis_id, issued_to: delegate.axis_id, root_operator: root,
-    scope: ['article:draft', 'article:publish'], expires: futureISO(30),
+    scope: ['x-test:article:draft', 'x-test:article:publish'], expires: futureISO(30),
   });
   const child = await createDelegation(harness, registrar, {
     issued_by: issuer.axis_id, issued_to: 'axis:downstream:sub', root_operator: root,
     parent_credential_id: parent.id,
-    scope: ['article:draft'], expires: futureISO(30),
+    scope: ['x-test:article:draft'], expires: futureISO(30),
   });
 
   const res = await getChain(harness, child.id);
@@ -268,7 +268,7 @@ test('Chain by delegation id: multi-link chain walks parents with intersected ef
   assert.equal(body.chainDepth, 2);
   assert.equal(body.chain[0].delegation, child.id, 'chain is leaf-first');
   assert.equal(body.chain[1].delegation, parent.id);
-  assert.deepEqual(body.effective_scope, ['article:draft']);
+  assert.deepEqual(body.effective_scope, ['x-test:article:draft']);
   assert.equal(body.chainValid, true);
 
   // Delegatee of the pinned credential is not a registered agent — the raw

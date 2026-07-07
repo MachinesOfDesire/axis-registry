@@ -27,6 +27,12 @@
  *   M3 cascade cap
  *     - direct-DB chain of 18 levels; root revoke halts at depth 16
  *       (16 children revoked, 2 left untouched)
+ *
+ *   Scope namespace (v0.3 §4.5; §13 conformance criterion 8)
+ *     - standard vocabulary scope → 201
+ *     - vendor-prefixed custom scope (incl. wildcard segment) → 201
+ *     - unprefixed non-standard scope → 400 invalid_scope
+ *     - unrecognized action under a reserved standard domain → 400 invalid_scope
  */
 
 import { test } from 'node:test';
@@ -81,13 +87,13 @@ test('Delegations: happy path no parent → 201', async (t) => {
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a', 'scope:b'],
+    scope: ['x-test:a', 'x-test:b'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   assert.equal(res.status, 201);
   const body = await res.json();
   assert.equal(body.status, 'active');
-  assert.deepEqual(body.scope, ['scope:a', 'scope:b']);
+  assert.deepEqual(body.scope, ['x-test:a', 'x-test:b']);
 });
 
 test('Delegations: child with subset scope → 201 (attenuation respected)', async (t) => {
@@ -100,7 +106,7 @@ test('Delegations: child with subset scope → 201 (attenuation respected)', asy
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a', 'scope:b', 'scope:c'],
+    scope: ['x-test:a', 'x-test:b', 'x-test:c'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   assert.equal(parentRes.status, 201);
@@ -111,7 +117,7 @@ test('Delegations: child with subset scope → 201 (attenuation respected)', asy
     issued_to: 'axis:downstream:2',
     root_operator: `axis:${operator.id}:operator`,
     parent_credential_id: parent.id,
-    scope: ['scope:a', 'scope:b'],  // subset of parent
+    scope: ['x-test:a', 'x-test:b'],  // subset of parent
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   assert.equal(childRes.status, 201, 'child with subset scope must succeed');
@@ -127,7 +133,7 @@ test('Delegations: child with wider scope → 400 delegation_chain_invalid (atte
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   const parent = await parentRes.json();
@@ -137,7 +143,7 @@ test('Delegations: child with wider scope → 400 delegation_chain_invalid (atte
     issued_to: 'axis:downstream:2',
     root_operator: `axis:${operator.id}:operator`,
     parent_credential_id: parent.id,
-    scope: ['scope:a', 'scope:b'],  // wider than parent
+    scope: ['x-test:a', 'x-test:b'],  // wider than parent
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
 
@@ -156,7 +162,7 @@ test('Delegations: child with root_operator mismatch → 400 delegation_chain_in
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   const parent = await parentRes.json();
@@ -166,7 +172,7 @@ test('Delegations: child with root_operator mismatch → 400 delegation_chain_in
     issued_to: 'axis:downstream:2',
     root_operator: 'axis:wrong-operator:operator',  // mismatch
     parent_credential_id: parent.id,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
 
@@ -185,7 +191,7 @@ test('Delegations: parent with max_sub_delegation_depth=0 → 400 (no further su
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
     constraints: { max_sub_delegation_depth: 0 },
   });
@@ -196,7 +202,7 @@ test('Delegations: parent with max_sub_delegation_depth=0 → 400 (no further su
     issued_to: 'axis:downstream:2',
     root_operator: `axis:${operator.id}:operator`,
     parent_credential_id: parent.id,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
 
@@ -215,7 +221,7 @@ test('Delegations: M5 — expires more than 90 days out → 400 expires_too_far'
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 91 * DAY_MS).toISOString(),  // >90 days
   });
 
@@ -234,7 +240,7 @@ test('Delegations: M5 — expires in the past → 400 invalid_request', async (t
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() - DAY_MS).toISOString(),  // in the past
   });
 
@@ -253,7 +259,7 @@ test('Delegations: M5 — malformed ISO expires → 400 invalid_request', async 
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:1',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: 'not-a-real-date',
   });
 
@@ -273,7 +279,7 @@ test('Delegations: DELETE root cascades revoke through 3-level child chain', asy
     issued_by: agent.axis_id,
     issued_to: 'axis:downstream:root',
     root_operator: `axis:${operator.id}:operator`,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   const root = await rootRes.json();
@@ -283,7 +289,7 @@ test('Delegations: DELETE root cascades revoke through 3-level child chain', asy
     issued_to: 'axis:downstream:c1',
     root_operator: `axis:${operator.id}:operator`,
     parent_credential_id: root.id,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   const c1 = await c1Res.json();
@@ -293,7 +299,7 @@ test('Delegations: DELETE root cascades revoke through 3-level child chain', asy
     issued_to: 'axis:downstream:c2',
     root_operator: `axis:${operator.id}:operator`,
     parent_credential_id: c1.id,
-    scope: ['scope:a'],
+    scope: ['x-test:a'],
     expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
   });
   const c2 = await c2Res.json();
@@ -347,7 +353,7 @@ test('Delegations: M3 cascade depth cap — 18-deep chain, root revoke halts at 
       `axis:downstream:${i}`,
       `axis:${operator.id}:operator`,
       i === 0 ? null : ids[i - 1],
-      JSON.stringify(['scope:a']),
+      JSON.stringify(['x-test:a']),
       now,
       expires,
       registrar.id,
@@ -378,4 +384,82 @@ test('Delegations: M3 cascade depth cap — 18-deep chain, root revoke halts at 
   }
   const deepest = await harness.db.prepare('SELECT status FROM delegations WHERE id = ?').bind(ids[17]).first();
   assert.equal(deepest.status, 'active', 'beyond-cap delegation must remain active (depth cap held)');
+});
+
+// ==========================================================================
+// Scope namespace enforcement on the write path (v0.3 §4.5; §13 criterion 8)
+// ==========================================================================
+
+test('Delegations: standard vocabulary scope → 201', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const { registrar, operator, agent } = await setup(harness);
+
+  const res = await createDelegation(harness, registrar, {
+    issued_by: agent.axis_id,
+    issued_to: 'axis:downstream:1',
+    root_operator: `axis:${operator.id}:operator`,
+    scope: ['content:comment', 'commerce:purchase'],
+    expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+  });
+  assert.equal(res.status, 201, 'recognized standard scopes must be accepted');
+  const body = await res.json();
+  assert.deepEqual(body.scope, ['content:comment', 'commerce:purchase']);
+});
+
+test('Delegations: vendor-prefixed custom scope (incl. wildcard segment) → 201', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const { registrar, operator, agent } = await setup(harness);
+
+  const res = await createDelegation(harness, registrar, {
+    issued_by: agent.axis_id,
+    issued_to: 'axis:downstream:1',
+    root_operator: `axis:${operator.id}:operator`,
+    scope: ['x-ghost:newsletter:send', 'x-vendor:article:*'],
+    expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+  });
+  assert.equal(res.status, 201, 'x-<vendor>: prefixed custom scopes must be accepted');
+});
+
+test('Delegations: unprefixed non-standard scope → 400 invalid_scope naming the scope', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const { registrar, operator, agent } = await setup(harness);
+
+  const res = await createDelegation(harness, registrar, {
+    issued_by: agent.axis_id,
+    issued_to: 'axis:downstream:1',
+    root_operator: `axis:${operator.id}:operator`,
+    scope: ['content:comment', 'comments:write'], // 2nd is grammar-valid but unprefixed non-standard
+    expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+  });
+  assert.equal(res.status, 400, 'unprefixed non-standard scope must be rejected');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'invalid_scope');
+  assert.ok(body.error.message.includes("'comments:write'"), 'error must name the offending scope');
+  assert.ok(body.error.message.includes('/.well-known/axis-scopes'), 'error must point at the scope discovery endpoint');
+});
+
+test('Delegations: unrecognized action under a reserved standard domain → 400 invalid_scope', async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.dispose());
+
+  const { registrar, operator, agent } = await setup(harness);
+
+  const res = await createDelegation(harness, registrar, {
+    issued_by: agent.axis_id,
+    issued_to: 'axis:downstream:1',
+    root_operator: `axis:${operator.id}:operator`,
+    scope: ['content:frobnicate'], // reserved domain, unrecognized action (domain squat)
+    expires: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+  });
+  assert.equal(res.status, 400, 'reserved-domain squatting must be rejected');
+  const body = await res.json();
+  assert.equal(body.error?.code, 'invalid_scope');
+  assert.ok(body.error.message.includes("'content:frobnicate'"), 'error must name the offending scope');
+  assert.ok(body.error.message.includes('/.well-known/axis-scopes'), 'error must point at the scope discovery endpoint');
 });

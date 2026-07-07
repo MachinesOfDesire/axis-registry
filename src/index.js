@@ -19,6 +19,7 @@ import { checkRateLimit, ipKey, RATE_LIMIT_TIERS } from './middleware/rate-limit
 import { logAudit } from './utils/audit.js';
 import { recordVerifyEvent } from './utils/telemetry.js';
 import { STANDARD_VOCABULARY } from './utils/scope-vocab.js';
+import { PROTOCOL_VERSION } from './utils/version.js';
 import { REGISTRY_MANIFEST, ROOT_DIRECTORY } from './legitimacy/artifacts.js';
 
 export default {
@@ -73,7 +74,7 @@ export default {
         const registryBase = env.REGISTRY_BASE_URL || 'https://registry.axisprime.ai';
         const platformId = registryBase.replace(/^https?:\/\//, '').replace(/\/$/, '');
         return addCors(jsonResponse(200, {
-          axis_version: '0.2',
+          axis_version: PROTOCOL_VERSION,
           platform_id: platformId,
           audience: platformId,
           access_policy: {
@@ -112,7 +113,7 @@ export default {
           }))
         );
         return addCors(jsonResponse(200, {
-          axis_version: '0.3',
+          axis_version: PROTOCOL_VERSION,
           platform_id: platformId,
           scopes,
           updated_at: '2026-06-14T00:00:00Z'
