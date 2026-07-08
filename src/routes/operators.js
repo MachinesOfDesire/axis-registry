@@ -10,6 +10,28 @@ import { generateToken } from '../utils/crypto.js';
 import { deriveOperatorSlug } from '../utils/operator-slug.js';
 import { verifyCanonicalProof } from '../utils/proof.js';
 
+/**
+ * Free-tier agent caps per the decoupled pricing model (2026-07-04; supersedes
+ * the earlier 2026-06-16 10/100 figures):
+ *
+ *   Single Operator (email-verified)  → 25 agents
+ *   Team (domain-verified)            → 250 agents
+ *   Verified (registrar quota push)   → 1000 agents (VERIFIED_DEFAULT_MAX_AGENTS)
+ *
+ * No per-agent fees. These are HARD caps: at the free tiers max_agents equals
+ * the free slot count, so there is no paid/unlimited fallthrough — upgrading
+ * tier (ultimately via POST /operators/:id/verification) is the only path to
+ * more agents. Migration 0009 reconciles pre-existing rows to these values.
+ */
+export const TIER_CAPS = {
+  email: { freeSlots: 25, maxAgents: 25 },
+  domain: { freeSlots: 250, maxAgents: 250 },
+};
+
+// Default enforced cap set by the registrar's Verified Identity quota push
+// (POST /operators/:id/verification). Free slot counters are preserved there.
+export const VERIFIED_DEFAULT_MAX_AGENTS = 1000;
+
 export async function handleVerifyDomain(body, registrar, env) {
   const { domain, method, email } = body;
 
@@ -129,8 +151,15 @@ export async function handleVerifyDomain(body, registrar, env) {
   // the speculative slug) and made idempotent with ON CONFLICT DO NOTHING, so a
   // reconciling repeat signup neither orphans a slot row nor disturbs existing
   // counters. agent_slots.operator_id is the PK → valid conflict target.
-  const freeSlots = row.verification_tier === 'domain' ? 3 : 0;
-  const maxAgents = row.verification_tier === 'email' ? 5 : null;
+  // Hard caps == free caps at both free tiers (locked pricing model; see
+  // TIER_CAPS above). A pre-existing operator's row is untouched (DO NOTHING),
+  // so a registrar-pushed max_agents (e.g. 1000) is never lowered here. The
+  // fallback covers KYB tiers reaching this path without a slots row (normally
+  // created by the verification push): 0 free, verified default cap.
+  const caps = TIER_CAPS[row.verification_tier]
+    || { freeSlots: 0, maxAgents: VERIFIED_DEFAULT_MAX_AGENTS };
+  const freeSlots = caps.freeSlots;
+  const maxAgents = caps.maxAgents;
   await env.DB.prepare(
     `INSERT INTO agent_slots (operator_id, free_slots_total, max_agents)
      VALUES (?, ?, ?)
@@ -240,8 +269,8 @@ export async function handleCheckDomain(body, registrar, env) {
         domain,
         verified: true,
         verifiedAt: now,
-        freeAgentSlots: 3,
-        message: 'Domain verified successfully. You can now register up to 3 agents for free.'
+        freeAgentSlots: TIER_CAPS.domain.freeSlots,
+        message: `Domain verified successfully. You can now register up to ${TIER_CAPS.domain.freeSlots} agents for free.`
       }
     };
   }
@@ -291,9 +320,9 @@ export async function handleSetOperatorVerification(operatorId, body, registrar,
     return { status: 403, body: { error: { code: 'not_your_resource', message: 'Operator belongs to a different registrar' } } };
   }
 
-  // max_agents: integer in [1, 1_000_000], or null for unlimited. Default 1000
-  // (the Verified Identity cap).
-  let maxAgents = 1000;
+  // max_agents: integer in [1, 1_000_000], or null for unlimited. Default
+  // VERIFIED_DEFAULT_MAX_AGENTS = 1000 (the Verified Identity cap).
+  let maxAgents = VERIFIED_DEFAULT_MAX_AGENTS;
   if (body && body.max_agents !== undefined) {
     if (body.max_agents === null) {
       maxAgents = null;
