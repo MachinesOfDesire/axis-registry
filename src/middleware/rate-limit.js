@@ -32,6 +32,20 @@
  *     — narrow funnel; legitimate registrars never trip this. Slows
  *     brute-force.
  *
+ *   RL_OPERATOR            60 req/min per operator id
+ *     Resource-creating mutations, checked IN-ROUTE after the operator is
+ *     resolved: POST /register, POST /delegations, PATCH /agents/*.
+ *     — sub-partitions the shared REGISTRAR bucket. A hosted console
+ *     funnels every one of its operators through ONE registrar key, so
+ *     without this tier a single hot operator can exhaust the registrar's
+ *     300/min and starve its siblings. Keyed on the resolved operator id
+ *     (`op:<id>`), which is why the check cannot live in the top-level
+ *     tier picker: the operator is only known after the route has parsed
+ *     the body and resolved ownership.
+ *     DELIBERATELY EXCLUDED: DELETE /agents/* and DELETE /delegations/*.
+ *     Deactivation and revocation are kill switches; an anti-spam limit
+ *     must never 429 the revocation path.
+ *
  * If a binding is unset (e.g. local dev), the helper is a no-op and
  * `success` is treated as `true`. Production deploys MUST set all four
  * bindings; the `wrangler.toml.example` block is the canonical reference.
@@ -46,6 +60,7 @@ const RATE_LIMIT_TIERS = {
   PUBLIC_VERIFY_SIG: 'RL_PUBLIC_VERIFY_SIG',
   REGISTRAR: 'RL_REGISTRAR',
   AUTH_FAIL: 'RL_AUTH_FAIL',
+  OPERATOR: 'RL_OPERATOR',
 };
 
 /**
@@ -88,14 +103,16 @@ export async function checkRateLimit(env, tier, key, request, ctx) {
     // `key` is left as the prefix (first 16 chars) to avoid logging full
     // API keys or full IPs at high cardinality. Cloudflare's request log
     // already has the unmasked IP if forensics are needed.
+    // `request` is optional: in-route callers (RL_OPERATOR) don't have the
+    // Request object in scope, so the log line degrades gracefully.
     console.warn(JSON.stringify({
       tag: 'RATE_LIMIT_HIT',
       message: 'rate-limit tier exceeded',
       tier,
       key_prefix: key.slice(0, 16),
-      url: request.url,
-      method: request.method,
-      cf_ray: request.headers.get('cf-ray') || null,
+      url: request ? request.url : null,
+      method: request ? request.method : null,
+      cf_ray: request ? (request.headers.get('cf-ray') || null) : null,
     }));
     return {
       status: 429,
@@ -110,6 +127,23 @@ export async function checkRateLimit(env, tier, key, request, ctx) {
   }
 
   return null;
+}
+
+/**
+ * Per-operator spam brake (RL_OPERATOR tier). Called from inside route
+ * handlers once the operator behind a resource-creating mutation has been
+ * resolved — see the tier description at the top of this file for why this
+ * cannot live in the top-level tier picker and which routes are deliberately
+ * excluded. Returns the same shape as checkRateLimit: null to proceed, or a
+ * `{ status: 429, body, headers }` object the route returns as-is (the
+ * Retry-After header threads through the call sites in index.js).
+ *
+ * No-ops when operatorId is falsy or the RL_OPERATOR binding is unset, so
+ * local dev, minimal forks, and pre-resolution error paths are unaffected.
+ */
+export async function checkOperatorRateLimit(env, operatorId) {
+  if (!operatorId) return null;
+  return checkRateLimit(env, RATE_LIMIT_TIERS.OPERATOR, `op:${operatorId}`, null, null);
 }
 
 /**

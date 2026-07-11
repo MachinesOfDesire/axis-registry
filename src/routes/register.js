@@ -8,6 +8,7 @@
 import { deriveAgentId, verifyEd25519Signature, generateToken, base64urlToBytes, bytesToBase58 } from '../utils/crypto.js';
 import { buildAxisDidV2 } from '../utils/did.js';
 import { verifyCanonicalProof } from '../utils/proof.js';
+import { checkOperatorRateLimit } from '../middleware/rate-limit.js';
 
 export async function handleRegister(body, registrar, env) {
   // Validate required fields
@@ -68,6 +69,13 @@ export async function handleRegister(body, registrar, env) {
       body: { error: { code: 'domain_not_verified', message: 'Domain verification required. Complete domain verification first.' } }
     };
   }
+
+  // Per-operator spam brake (RL_OPERATOR). Sits after the ownership/status
+  // gates (a 429 here reveals nothing the owner doesn't already know) and
+  // before the idempotency lookup: a re-bind storm is still a storm, and the
+  // slot/velocity machinery below shouldn't burn D1 reads absorbing it.
+  const operatorLimit = await checkOperatorRateLimit(env, operator.id);
+  if (operatorLimit) return operatorLimit;
 
   // ── Idempotency: the public key IS the identity ─────────────────────────
   // If this exact key is already a registered agent, this is a re-bind, not a
@@ -426,7 +434,7 @@ async function buildSlotReceipt(env, operator) {
  */
 export async function handleUpdateAgent(agentId, body, registrar, env) {
   const agent = await env.DB.prepare(
-    'SELECT id, registrar_id FROM agents WHERE id = ? OR axis_id = ? OR did = ?'
+    'SELECT id, registrar_id, operator_id FROM agents WHERE id = ? OR axis_id = ? OR did = ?'
   ).bind(agentId, agentId, agentId).first();
   if (!agent) {
     return { status: 404, body: { error: { code: 'agent_not_found', message: 'Agent not found' } } };
@@ -435,6 +443,11 @@ export async function handleUpdateAgent(agentId, body, registrar, env) {
   if (agent.registrar_id !== registrar.id) {
     return { status: 403, body: { error: { code: 'not_your_resource', message: 'Agent belongs to a different registrar' } } };
   }
+
+  // Per-operator spam brake (RL_OPERATOR) — rename/description churn writes
+  // rows and audit entries; brake it per operator, after the BOLA gate.
+  const operatorLimit = await checkOperatorRateLimit(env, agent.operator_id);
+  if (operatorLimit) return operatorLimit;
 
   const updates = [];
   const binds = [];

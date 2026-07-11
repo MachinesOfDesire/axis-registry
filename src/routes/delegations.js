@@ -16,6 +16,7 @@ import { validateScopeSet, isScopeSubset, intersectScopes } from '../utils/scope
 import { classifyScope } from '../utils/scope-vocab.js';
 import { verifyDelegationProof } from '../utils/proof.js';
 import { parseAxisDid } from '../utils/did.js';
+import { checkOperatorRateLimit } from '../middleware/rate-limit.js';
 
 /** Is DC-proof enforcement enabled? Off by default so legacy/unsigned
  * delegations (and the keyless operator-helper demo) keep working.
@@ -450,12 +451,14 @@ export async function handleCreateDelegation(body, registrar, env) {
   // operator-scoped identifier (e.g. axis:{operator}:operator). Look in both
   // tables. Admin+ follows the same rule on this normal path.
   let issuerRegistrarId = null;
+  let issuerOperatorId = null;
 
   const issuerAgent = await env.DB.prepare(
-    'SELECT registrar_id FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
+    'SELECT registrar_id, operator_id FROM agents WHERE axis_id = ? OR did = ? OR id = ?'
   ).bind(issued_by, issued_by, issued_by).first();
   if (issuerAgent) {
     issuerRegistrarId = issuerAgent.registrar_id;
+    issuerOperatorId = issuerAgent.operator_id;
   } else {
     // Try operator lookup. Operator identifiers look like "axis:{opId}:..." —
     // fall back to matching the namespace segment against operators.id, or a
@@ -463,10 +466,11 @@ export async function handleCreateDelegation(body, registrar, env) {
     const parts = issued_by.split(':');
     const opCandidate = parts.length >= 2 && parts[0] === 'axis' ? parts[1] : issued_by;
     const issuerOperator = await env.DB.prepare(
-      'SELECT registrar_id FROM operators WHERE id = ?'
+      'SELECT registrar_id, id FROM operators WHERE id = ?'
     ).bind(opCandidate).first();
     if (issuerOperator) {
       issuerRegistrarId = issuerOperator.registrar_id;
+      issuerOperatorId = issuerOperator.id;
     }
   }
 
@@ -482,6 +486,16 @@ export async function handleCreateDelegation(body, registrar, env) {
       body: { error: { code: 'not_your_resource', message: 'issued_by belongs to a different registrar' } }
     };
   }
+
+  // Per-operator spam brake (RL_OPERATOR): delegation minting is the
+  // cheapest way to pump rows into the registry, and every operator of a
+  // hosted console shares that console's single registrar bucket. Checked
+  // after the ownership gate; the issuing operator is known either way the
+  // issuer resolved (agent row → operator_id, operator row → id). Revocation
+  // (DELETE /delegations/*) is deliberately NOT braked — kill switches
+  // must never 429.
+  const operatorLimit = await checkOperatorRateLimit(env, issuerOperatorId);
+  if (operatorLimit) return operatorLimit;
 
   // If there's a parent credential, the caller must also own that delegation
   // (you can't tack a child onto someone else's chain).

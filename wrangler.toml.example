@@ -59,7 +59,7 @@ database_id = "CHANGE-ME-d1-database-id"     # CHANGE-ME
 # limiter with its own (limit, period, key-source). The worker code picks
 # which binding to call per request — see `src/middleware/rate-limit.js`.
 #
-# All four bindings are RECOMMENDED for production. If a binding is omitted,
+# All five bindings are RECOMMENDED for production. If a binding is omitted,
 # `checkRateLimit` no-ops for that tier (so local dev / minimal forks work
 # without these blocks). For production, leave them all configured.
 #
@@ -102,3 +102,16 @@ simple = { limit = 300, period = 60 }
 name = "RL_AUTH_FAIL"
 namespace_id = "1004"
 simple = { limit = 30, period = 60 }
+
+# Per-operator spam brake: POST /register, POST /delegations, PATCH
+# /agents/*. Keyed on the resolved operator id, checked in-route (the
+# operator is only known after body parse + ownership resolution).
+# Sub-partitions the shared REGISTRAR bucket: a hosted console funnels all
+# of its operators through one registrar key, and without this tier one hot
+# operator can starve its siblings. 60/min = 1/sec sustained per operator —
+# far above any legitimate single-operator write pattern. DELETE endpoints
+# (revoke/deactivate) are deliberately NOT braked: kill switches never 429.
+[[ratelimits]]
+name = "RL_OPERATOR"
+namespace_id = "1005"
+simple = { limit = 60, period = 60 }

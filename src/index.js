@@ -465,7 +465,8 @@ export default {
             ip_address: request.headers.get('cf-connecting-ip')
           }));
         }
-        return addCors(jsonResponse(result.status, result.body));
+        // Operator rate-limit path returns a Retry-After header; thread it through.
+        return addCors(jsonResponse(result.status, result.body, result.headers || {}));
       }
 
       // DELETE /agents/:agent_id
@@ -494,7 +495,8 @@ export default {
       if (method === 'POST' && path === '/delegations') {
         const body = await request.json();
         const result = await handleCreateDelegation(body, registrar, env);
-        return addCors(jsonResponse(result.status, result.body));
+        // Operator rate-limit path returns a Retry-After header; thread it through.
+        return addCors(jsonResponse(result.status, result.body, result.headers || {}));
       }
 
       // DELETE /delegations/:id
