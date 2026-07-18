@@ -33,6 +33,21 @@ export default {
       return handleOptions(request);
     }
 
+    // GET /health, /v1/health — liveness surface for uptime monitors and
+    // status pages. Deliberately dependency-free: handled BEFORE auth, rate
+    // limiting, and any D1 access, so it stays green iff the edge can run the
+    // worker at all (a registrar people depend on needs a cheap "is it up?"
+    // signal that doesn't share a fate with the database). Not cached —
+    // monitors must see live status, never a stale edge copy.
+    if (method === 'GET' && (path === '/health' || path === '/v1/health')) {
+      return addCors(jsonResponse(200, {
+        status: 'ok',
+        service: 'axis-registry',
+        axis_version: PROTOCOL_VERSION,
+        time: new Date().toISOString(),
+      }, { 'Cache-Control': 'no-store' }));
+    }
+
     try {
       // Authenticate up-front so we can gate routes by role.
       // `registrar` is null if no/invalid Bearer header was sent.
