@@ -1,0 +1,36 @@
+-- Migration 0010: Scope down the launch registrar key (security-sweep F2 / "B2").
+--
+-- SECURITY-REVIEW-PENDING — this is P0 of a staged fix; the fuller per-capability
+-- scoping (see below) is not yet built. Greppable so a later sweep finds what's owed.
+--
+-- PROBLEM. Migration 0001 elevated the `kipple-labs` seed registrar to `super_admin`
+-- (its own comment notes this is "the row whose API key is used by the registrar-app
+-- via REGISTRY_API_KEY"). That single automated credential therefore carried, in
+-- addition to its legitimate work (register agents, issue delegations, verify domains,
+-- register operator keys for the operators it serves):
+--   * cross-tenant READ over every registrar's agents/operators/audit (/admin/*), and
+--   * BREAK-GLASS cross-tenant MUTATION — POST /admin/force-deactivate-agent/:id and
+--     POST /admin/force-revoke-delegation/:id — i.e. it could deactivate or revoke ANY
+--     registrar's agents/delegations.
+-- For the trust anchor's launch key, holding human-only break-glass power is the wrong
+-- posture: a leak of REGISTRY_API_KEY would be catastrophic rather than merely serious.
+--
+-- FIX (P0, this migration). Downgrade the launch key from `super_admin` to `admin`.
+-- This is NON-BREAKING for the registrar-app:
+--   * `admin` keeps the cross-tenant READ the app actually uses (GET /admin/agents/:id).
+--   * All normal-path mutations remain BOLA-scoped to the app's own registrar_id
+--     (register / delegations / operators — enforcement already exists in the routes).
+--   * The app never calls the /admin/force-* routes, so it loses nothing operational.
+-- Break-glass force-* stays available to a SEPARATE, human-held super_admin credential
+-- (see the rotation/split runbook), which is where that power belongs.
+--
+-- STILL OWED (tracked in the B2 design note; not in this migration):
+--   P1 — rotate REGISTRY_API_KEY (fresh key; update 1Password + the app secret + the
+--        registrars.api_key_hash for this row). Rotation is an operator step.
+--   P2 — least-privilege: move the app off cross-tenant admin READs so the launch key
+--        can drop to plain `registrar`; then add a real per-capability / per-operator
+--        scope column to registrars and enforce it registry-side (BOLA infra already
+--        exists to hang it on).
+--   P3 — alert on use-volume / anomalous force-* usage.
+
+UPDATE registrars SET role = 'admin' WHERE id = 'kipple-labs' AND role = 'super_admin';
