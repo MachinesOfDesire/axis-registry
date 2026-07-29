@@ -174,11 +174,11 @@ class Harness {
    *   opts.id                — operator id (default: generated)
    *   opts.email             — required-ish; default 'test+<suffix>@example.com'
    *   opts.domain            — optional
-   *   opts.tier              — 'email' | 'domain' | 'kyb_individual' | 'kyb_organization'
+   *   opts.tier              — 'email' | 'domain' | 'kyc' | 'kyb'
    *   opts.registrar_id      — required; the registrar that owns this operator
    *   opts.free_slots_total  — default: 3
    *   opts.max_agents        — default: null (unlimited paid)
-   *   opts.domain_verified   — default: tier === 'domain' or 'kyb_organization'
+   *   opts.domain_verified   — default: tier === 'domain' or 'kyb'
    */
   async createOperator(opts) {
     if (!opts.registrar_id) throw new Error('createOperator: registrar_id required');
@@ -187,7 +187,7 @@ class Harness {
       ? opts.domain.split('.').slice(0, -1).join('-')
       : `op-${randomSuffix(24)}`);
     const email = opts.email || `test+${randomSuffix(8)}@example.com`;
-    const domainVerified = opts.domain_verified ?? (tier === 'domain' || tier === 'kyb_organization');
+    const domainVerified = opts.domain_verified ?? (tier === 'domain' || tier === 'kyb');
 
     await this.db.prepare(
       `INSERT INTO operators (id, email, domain, verification_tier, domain_verified, registrar_id, status)

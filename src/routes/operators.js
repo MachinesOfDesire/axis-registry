@@ -59,8 +59,8 @@ export async function handleVerifyDomain(body, registrar, env) {
   //
   //   domain          → verified-domain root (TLD stripped, dots → dashes)
   //   email           → opaque "op-<12hex>"
-  //   kyb_individual  → opaque
-  //   kyb_organization → verified domain if present, else opaque
+  //   kyc             → opaque
+  //   kyb             → verified domain if present, else opaque
   //
   // See src/utils/operator-slug.js for the full tier table + rationale.
   const operatorId = deriveOperatorSlug(tier, domain);
@@ -300,8 +300,8 @@ export async function handleCheckDomain(body, registrar, env) {
  * Body: { max_agents?: number (default 1000) | null (unlimited), provider?: string }
  *
  * Vocab note: the operators.verification_tier CHECK allows
- * email|domain|kyb_individual|kyb_organization. "Verified Identity" (individual
- * KYC) maps to kyb_individual here; the registrar-side label ("verified") is a
+ * email|domain|kyc|kyb (migration 0011). "Verified Identity" (individual
+ * KYC) maps to kyc here; the registrar-side label ("verified") is a
  * separate vocabulary, and unifying the two is a tracked follow-up.
  */
 export async function handleSetOperatorVerification(operatorId, body, registrar, env) {
@@ -335,12 +335,13 @@ export async function handleSetOperatorVerification(operatorId, body, registrar,
   const provider = (body && typeof body.provider === 'string') ? body.provider.slice(0, 64) : 'stripe_identity';
   const now = new Date().toISOString();
 
-  // Mark the operator individually KYB-verified. 'kyb_individual' is the
-  // registry's canonical value for a verified individual; the CHECK constraint
-  // does not permit a bare 'verified'.
+  // Mark the operator KYC-verified. 'kyc' is the registry's canonical value
+  // for a verified natural person; the CHECK constraint does not permit a
+  // bare 'verified'. (kyb_verified/kyb_provider are legacy column names that
+  // now record either KYC or KYB evidence.)
   await env.DB.prepare(
     `UPDATE operators
-     SET verification_tier = 'kyb_individual', kyb_verified = 1, kyb_verified_at = ?,
+     SET verification_tier = 'kyc', kyb_verified = 1, kyb_verified_at = ?,
          kyb_provider = ?, updated_at = ?
      WHERE id = ?`
   ).bind(now, provider, now, operatorId).run();
@@ -357,7 +358,7 @@ export async function handleSetOperatorVerification(operatorId, body, registrar,
     status: 200,
     body: {
       operator_id: operatorId,
-      verification_tier: 'kyb_individual',
+      verification_tier: 'kyc',
       kyb_verified: true,
       max_agents: maxAgents,
       provider

@@ -7,7 +7,7 @@
  * The key normative property (locked in the 2026-05-11 design decision):
  * the operator slug is DERIVED from the operator's verification proof,
  * never caller-chosen. Squatting `did:axis:prime:openai:<anything>`
- * therefore requires verifying ownership of openai.com (or KYB org with
+ * therefore requires verifying ownership of openai.com (or KYB with
  * openai.com as the verified domain).
  *
  * Tier table:
@@ -18,9 +18,9 @@
  *                            "example.co.uk"        → "example-co"   (PSL TODO)
  *
  *   email               opaque `op-<24 hex>`       (12 random bytes)
- *   kyb_individual      opaque `op-<24 hex>`       (never derive from name)
+ *   kyc                 opaque `op-<24 hex>`       (never derive from name)
  *
- *   kyb_organization    verified domain if present (same as domain tier),
+ *   kyb                 verified domain if present (same as domain tier),
  *                       else opaque `op-<24hex>`
  *
  * Public Suffix List handling is a TODO: for now, `example.co.uk` produces
@@ -60,8 +60,8 @@ export function deriveDomainSlug(domain) {
  * generateToken(n) returns n random BYTES hex-encoded, so generateToken(12)
  * yields 24 hex characters (96 bits of entropy) — NOT 12 chars. Do not
  * "shorten" this to generateToken(6) or expand it to generateToken(24); the
- * canonical opaque slug is 24 hex chars. Used for email-tier, kyb_individual,
- * and as the fallback for kyb_organization when no verified domain is on file.
+ * canonical opaque slug is 24 hex chars. Used for email-tier, kyc,
+ * and as the fallback for kyb when no verified domain is on file.
  */
 export function generateOpaqueOperatorSlug() {
   return 'op-' + generateToken(12); // 12 bytes → 24 hex chars
@@ -73,16 +73,16 @@ export function generateOpaqueOperatorSlug() {
  * for ensuring the operator slug doesn't collide with an existing row
  * (retry the opaque path if so).
  *
- * @param {string} tier   "email" | "domain" | "kyb_individual" | "kyb_organization"
+ * @param {string} tier   "email" | "domain" | "kyc" | "kyb"
  * @param {string|null} verifiedDomain  domain that has been verified (or null)
  */
 export function deriveOperatorSlug(tier, verifiedDomain) {
   if (tier === 'domain') {
     return deriveDomainSlug(verifiedDomain) || generateOpaqueOperatorSlug();
   }
-  if (tier === 'kyb_organization' && verifiedDomain) {
+  if (tier === 'kyb' && verifiedDomain) {
     return deriveDomainSlug(verifiedDomain) || generateOpaqueOperatorSlug();
   }
-  // email, kyb_individual, kyb_organization-without-domain
+  // email, kyc, kyb-without-domain
   return generateOpaqueOperatorSlug();
 }

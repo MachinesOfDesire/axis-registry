@@ -13,7 +13,7 @@
  *   - Unauthenticated (no Bearer) → 401
  *   - Operator not found → 404
  *   - BOLA: registrar may only attest its OWN operators → 403 not_your_resource
- *   - Happy path (default cap) → 200, tier=kyb_individual, kyb_verified, max_agents=1000
+ *   - Happy path (default cap) → 200, tier=kyc, kyb_verified, max_agents=1000
  *   - Custom max_agents → 200, cap set, free/used slots preserved
  *   - max_agents: null (unlimited) → 200, max_agents NULL
  *   - max_agents out of range → clamped to [1, 1_000_000]
@@ -86,7 +86,7 @@ test('verification: BOLA — registrar cannot attest another registrar\'s operat
   assert.equal(after.kyb_verified, 0);
 });
 
-test('verification: happy path — default cap raises to 1000, tier=kyb_individual', async (t) => {
+test('verification: happy path — default cap raises to 1000, tier=kyc', async (t) => {
   const harness = await createHarness();
   t.after(() => harness.dispose());
   const reg = await harness.createRegistrar({ id: 'reg-a' });
@@ -102,13 +102,13 @@ test('verification: happy path — default cap raises to 1000, tier=kyb_individu
   });
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.verification_tier, 'kyb_individual');
+  assert.equal(body.verification_tier, 'kyc');
   assert.equal(body.kyb_verified, true);
   assert.equal(body.max_agents, 1000);
   assert.equal(body.provider, 'stripe_identity');
 
   const after = await getOperator(harness, op.id);
-  assert.equal(after.verification_tier, 'kyb_individual');
+  assert.equal(after.verification_tier, 'kyc');
   assert.equal(after.kyb_verified, 1);
   assert.equal(after.kyb_provider, 'stripe_identity');
 
