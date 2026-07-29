@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS verify_events (
   aud           TEXT,               -- the platform: the AIT's `aud` claim
   agent_id      TEXT,               -- axis_id of the verifying agent
   operator_id   TEXT,               -- canonical axis:<slug>:operator
-  operator_tier TEXT,               -- email|domain|verified|kyb_individual|kyb_organization
+  operator_tier TEXT,               -- email|domain|kyc|kyb (the operators.verification_tier vocabulary; a
+                                    -- pre-0011 comment here also listed 'verified', which the operators
+                                    -- CHECK can never produce and no writer ever recorded)
   valid         INTEGER NOT NULL,   -- 1 if the token verified, 0 otherwise
   code          TEXT                -- failure code when valid=0, else NULL
 );

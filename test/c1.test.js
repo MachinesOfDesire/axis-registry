@@ -70,17 +70,17 @@ test('deriveOperatorSlug: email tier always opaque', () => {
   assert.match(slug2, /^op-[0-9a-f]{24}$/);
 });
 
-test('deriveOperatorSlug: kyb_individual always opaque (no leaked identity)', () => {
-  const slug = deriveOperatorSlug('kyb_individual', 'doe-family.com');
+test('deriveOperatorSlug: kyc always opaque (no leaked identity)', () => {
+  const slug = deriveOperatorSlug('kyc', 'doe-family.com');
   assert.match(slug, /^op-[0-9a-f]{24}$/);
 });
 
-test('deriveOperatorSlug: kyb_organization with domain uses domain', () => {
-  assert.equal(deriveOperatorSlug('kyb_organization', 'widget-corp.com'), 'widget-corp');
+test('deriveOperatorSlug: kyb with domain uses domain', () => {
+  assert.equal(deriveOperatorSlug('kyb', 'widget-corp.com'), 'widget-corp');
 });
 
-test('deriveOperatorSlug: kyb_organization without domain falls back to opaque', () => {
-  const slug = deriveOperatorSlug('kyb_organization', null);
+test('deriveOperatorSlug: kyb without domain falls back to opaque', () => {
+  const slug = deriveOperatorSlug('kyb', null);
   assert.match(slug, /^op-[0-9a-f]{24}$/);
 });
 

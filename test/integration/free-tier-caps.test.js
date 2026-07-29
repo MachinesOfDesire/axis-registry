@@ -211,7 +211,7 @@ test('migration 0009: upgrades legacy rows, never lowers higher caps, idempotent
   });
   // KYB tier — untouched by the migration.
   const kyb = await harness.createOperator({
-    registrar_id: reg.id, tier: 'kyb_individual',
+    registrar_id: reg.id, tier: 'kyc',
     free_slots_total: 0, max_agents: 1000,
   });
 

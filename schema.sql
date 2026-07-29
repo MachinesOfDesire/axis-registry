@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS operators (
   domain_verification_method TEXT CHECK(domain_verification_method IN ('dns_txt', 'http_file', NULL)),
   domain_verification_token TEXT,               -- pending verification token
   domain_verification_expires TEXT,             -- token expiry
-  verification_tier TEXT NOT NULL DEFAULT 'email' CHECK(verification_tier IN ('email', 'domain', 'kyb_individual', 'kyb_organization')),
+  verification_tier TEXT NOT NULL DEFAULT 'email' CHECK(verification_tier IN ('email', 'domain', 'kyc', 'kyb')),
   kyb_verified INTEGER NOT NULL DEFAULT 0,
   kyb_verified_at TEXT,
   kyb_provider TEXT,                            -- third-party KYB provider name
