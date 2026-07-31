@@ -57,9 +57,9 @@ for the SDK to branch on.
 
 | Role | Powers |
 |---|---|
-| `registrar` | Register / deactivate agents under operators it owns; create / revoke delegations issued by its agents; verify domains. |
+| `registrar` | Register / deactivate agents under operators it owns; set operator status (`POST /operators/:id/status` — the operator kill switch); create / revoke delegations issued by its agents; verify domains. |
 | `admin` | Cross-tenant read on operators, agents, audit log, and stats. Same BOLA constraints as `registrar` on the normal write paths. |
-| `super_admin` | Break-glass writes: `/admin/force-deactivate-agent/:id` and `/admin/force-revoke-delegation/:id`. Audit row is written *before* the mutation; aborts if the audit write fails. Reason is required. |
+| `super_admin` | Break-glass writes: `/admin/force-deactivate-agent/:id`, `/admin/force-deactivate-operator/:id`, and `/admin/force-revoke-delegation/:id`. Audit row is written *before* the mutation; aborts if the audit write fails. Reason is required. |
 
 Bearer-token auth via `Authorization: Bearer <key>`. Each registrar's raw
 key lives outside source control; only the SHA-256 hash is stored in the

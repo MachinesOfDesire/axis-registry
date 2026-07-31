@@ -89,14 +89,14 @@ flowchart TB
             wellknown[".well-known/*<br/>axis-access · scopes ·<br/>registry · directory"]
             resolve["resolve/:did · agents/:id ·<br/>operators/:id"]
             verify["verify (AIT · identity ·<br/>signature)"]
-            revoke["revocation/:id"]
+            revoke["revocation/:id ·<br/>revocation/operator/:id"]
             deleg["delegations/:id [/chain]"]
         end
 
         subgraph auth["Registrar-authenticated routes"]
             register["POST /register"]
             mutate["PATCH/DELETE agents ·<br/>POST/DELETE delegations"]
-            opmgmt["operators: verify-domain ·<br/>/key · /verification"]
+            opmgmt["operators: verify-domain ·<br/>/key · /verification · /status"]
             selflist["list agents / operators / audit<br/>(BOLA-scoped)"]
         end
 
@@ -145,9 +145,12 @@ flowchart TB
 - **Break-glass writes audit first.** `force-*` endpoints insert the audit row
   and abort the mutation if that write fails. `target_registrar_id` is captured
   so an affected registrar sees force-actions on their own resources.
-- **Public reads are edge-cached** (`Cache-Control: public, max-age=3600`) *only*
+- **Public reads are edge-cached** (`Cache-Control: public, max-age=60`) *only*
   when unauthenticated; presence of `Authorization`/`?ait=` unlocks a
-  presentation layer that varies by caller, so caching is skipped there.
+  presentation layer that varies by caller, so caching is skipped there. The
+  TTL is short because record payloads carry `status` — a longer cache would
+  let a revoked agent or operator look active to record readers for the cache
+  lifetime. Decision paths (`/verify*`, `/revocation/*`) are never cached.
 - The registry **verifies** AITs and delegation chains but is **custody-agnostic**
   — it never holds agent or operator private keys.
 
