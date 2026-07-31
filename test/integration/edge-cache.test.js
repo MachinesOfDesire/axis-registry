@@ -1,10 +1,14 @@
 /**
  * Edge-cache headers on public reads (Pre-Launch Engineering Brief §3.4).
  *
- * `Cache-Control: public, max-age=3600` is set on:
+ * `Cache-Control: public, max-age=60` is set on:
  *   - GET /agents/:id
  *   - GET /operators/:id
  *   - GET /resolve/:did
+ *
+ * TTL is 60s (was 3600s): these payloads carry `status`, and a 1-hour edge
+ * cache let a freshly-revoked agent/operator look active to record readers
+ * for up to an hour. See publicReadCacheHeaders in src/index.js.
  *
  * Only when (a) the response is 200 AND (b) the caller is NOT attempting
  * to unlock the presentation layer. Presentation-attempt requests carry
@@ -15,17 +19,17 @@
  * Coverage:
  *
  *   GET /agents/:id
- *     - Unauthed 200 → Cache-Control: public, max-age=3600
+ *     - Unauthed 200 → Cache-Control: public, max-age=60
  *     - With Authorization header → no Cache-Control (presentation attempt)
  *     - With ?ait= query → no Cache-Control (presentation attempt)
  *     - 404 → no Cache-Control (cached 404 would mask a future registration)
  *
  *   GET /operators/:id
- *     - Unauthed 200 → Cache-Control: public, max-age=3600
+ *     - Unauthed 200 → Cache-Control: public, max-age=60
  *     - With Authorization → no Cache-Control
  *
  *   GET /resolve/:did
- *     - Unauthed 200 → Cache-Control: public, max-age=3600
+ *     - Unauthed 200 → Cache-Control: public, max-age=60
  */
 
 import { test } from 'node:test';
@@ -56,7 +60,7 @@ async function seedAgentWithOperator(harness) {
   return { registrar, operator, agent };
 }
 
-test('Edge cache: unauthed GET /agents/:id 200 sets Cache-Control public, max-age=3600', async (t) => {
+test('Edge cache: unauthed GET /agents/:id 200 sets Cache-Control public, max-age=60', async (t) => {
   const harness = await createHarness();
   t.after(() => harness.dispose());
 
@@ -66,7 +70,7 @@ test('Edge cache: unauthed GET /agents/:id 200 sets Cache-Control public, max-ag
   assert.equal(res.status, 200);
   assert.equal(
     res.headers.get('Cache-Control'),
-    'public, max-age=3600',
+    'public, max-age=60',
     'unauthed public read must set the edge cache header',
   );
 });
@@ -128,7 +132,7 @@ test('Edge cache: unauthed GET /operators/:id 200 sets Cache-Control', async (t)
 
   const res = await harness.fetch(`/operators/${encodeURIComponent(operator.id)}`, { method: 'GET' });
   assert.equal(res.status, 200);
-  assert.equal(res.headers.get('Cache-Control'), 'public, max-age=3600');
+  assert.equal(res.headers.get('Cache-Control'), 'public, max-age=60');
 });
 
 test('Edge cache: GET /operators/:id with Authorization skips cache', async (t) => {
@@ -153,7 +157,7 @@ test('Edge cache: unauthed GET /resolve/:did 200 sets Cache-Control', async (t) 
 
   const res = await harness.fetch(`/resolve/${encodeURIComponent(agent.did)}`, { method: 'GET' });
   assert.equal(res.status, 200);
-  assert.equal(res.headers.get('Cache-Control'), 'public, max-age=3600');
+  assert.equal(res.headers.get('Cache-Control'), 'public, max-age=60');
 });
 
 test('Edge cache: 404 on GET /resolve/:did does NOT set Cache-Control', async (t) => {

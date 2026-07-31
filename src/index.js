@@ -10,7 +10,7 @@
 import { handleRegister, handleUpdateAgent } from './routes/register.js';
 import { handleResolve, handleGetAgent, extractPresentationContext } from './routes/resolve.js';
 import { handleVerifyIdentity, handleVerifyAIT, handleVerifySignature } from './routes/verify.js';
-import { handleRevocation, handleDeactivateAgent, forceDeactivateAgent } from './routes/revocation.js';
+import { handleRevocation, handleOperatorRevocation, handleDeactivateAgent, forceDeactivateAgent, handleSetOperatorStatus, forceDeactivateOperator } from './routes/revocation.js';
 import { handleCreateDelegation, handleGetDelegation, handleRevokeDelegation, handleVerifyChain, forceRevokeDelegation } from './routes/delegations.js';
 import { handleVerifyDomain, handleCheckDomain, handleSetOperatorVerification, handleRegisterOperatorKey } from './routes/operators.js';
 import { authenticateRegistrar, isAdmin, requireAdmin, requireSuperAdmin } from './middleware/auth.js';
@@ -132,7 +132,7 @@ export default {
           platform_id: platformId,
           scopes,
           updated_at: '2026-06-14T00:00:00Z'
-        }, publicReadCacheHeaders(request)));
+        }, publicReadCacheHeaders(request, WELL_KNOWN_CACHE_MAX_AGE)));
       }
 
       // GET /.well-known/axis-registry — registry self-manifest (v0.3 candidate
@@ -140,7 +140,7 @@ export default {
       // signing key; see src/legitimacy/artifacts.js + scripts/sign-legitimacy-
       // artifacts.mjs). Public, edge-cacheable.
       if (method === 'GET' && path === '/.well-known/axis-registry') {
-        return addCors(jsonResponse(200, REGISTRY_MANIFEST, publicReadCacheHeaders(request)));
+        return addCors(jsonResponse(200, REGISTRY_MANIFEST, publicReadCacheHeaders(request, WELL_KNOWN_CACHE_MAX_AGE)));
       }
 
       // GET /.well-known/axis-directory — AXIS Prime's signed root directory of
@@ -148,7 +148,7 @@ export default {
       // key; verifiers pin the root public key and check this directory before
       // trusting any registry's records. Public, edge-cacheable.
       if (method === 'GET' && path === '/.well-known/axis-directory') {
-        return addCors(jsonResponse(200, ROOT_DIRECTORY, publicReadCacheHeaders(request)));
+        return addCors(jsonResponse(200, ROOT_DIRECTORY, publicReadCacheHeaders(request, WELL_KNOWN_CACHE_MAX_AGE)));
       }
 
       // GET /agents?operator_id= — List agents for an operator.
@@ -309,6 +309,18 @@ export default {
         return addCors(jsonResponse(result.status, result.body));
       }
 
+      // GET /revocation/operator/:operator_id — public operator revocation
+      // check. This is the route GET /operators/:id advertises as the
+      // operator `revocation_url` (previously the URL fell through into the
+      // agent matcher below — whose regex accepts slashes — and 404'd for
+      // every operator, so this MUST be matched first). Kill-switch read:
+      // never cached, PUBLIC_READ rate tier like the agent revocation check.
+      if (method === 'GET' && path.match(/^\/revocation\/operator\/([^/]+)$/)) {
+        const opId = decodeURIComponent(path.match(/^\/revocation\/operator\/([^/]+)$/)[1]);
+        const result = await handleOperatorRevocation(opId, env);
+        return addCors(jsonResponse(result.status, result.body));
+      }
+
       // GET /revocation/:agent_id
       if (method === 'GET' && path.match(/^\/revocation\/(.+)$/)) {
         const agentId = decodeURIComponent(path.split('/revocation/')[1]);
@@ -441,6 +453,58 @@ export default {
           return addCors(jsonResponse(500, { error: { code: 'audit_write_failed', message: 'Audit record could not be written; mutation aborted' } }));
         }
         const result = await forceRevokeDelegation(targetDelegationId, body, env);
+        return addCors(jsonResponse(result.status, result.body));
+      }
+
+      // POST /admin/force-deactivate-operator/:operatorId — break-glass
+      // operator kill switch, mirroring force-deactivate-agent: super_admin
+      // only, reason required, audit row written BEFORE the mutation and the
+      // mutation aborted if the audit insert fails. Enforcement is the
+      // /verify operator-status join (no cascade into agent rows).
+      if (method === 'POST' && path.match(/^\/admin\/force-deactivate-operator\/(.+)$/)) {
+        const denial = requireSuperAdmin(registrar);
+        if (denial) return addCors(jsonResponse(denial.status, denial.body));
+        const targetOperatorId = decodeURIComponent(path.match(/^\/admin\/force-deactivate-operator\/(.+)$/)[1]);
+        let body = {};
+        try { body = await request.json(); } catch(e) {}
+        if (!body.reason || typeof body.reason !== 'string' || !body.reason.trim()) {
+          return addCors(jsonResponse(400, { error: { code: 'invalid_request', message: 'reason (non-empty string) is required' } }));
+        }
+        // Pre-lookup for target_registrar_id (H7). 404 before audit if missing.
+        const targetOperatorRow = await env.DB.prepare(
+          'SELECT registrar_id FROM operators WHERE id = ?'
+        ).bind(targetOperatorId).first();
+        if (!targetOperatorRow) {
+          return addCors(jsonResponse(404, { error: { code: 'operator_not_found', message: 'Operator not found' } }));
+        }
+        // Audit FIRST — abort if it fails.
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_log (action, actor, target, operator_id, registrar_id, target_registrar_id, details, ip_address)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            'force_deactivate_operator',
+            registrar.id,
+            targetOperatorId,
+            targetOperatorId,
+            registrar.id,
+            targetOperatorRow.registrar_id,
+            JSON.stringify({ reason: body.reason, role: registrar.role }),
+            request.headers.get('cf-connecting-ip')
+          ).run();
+        } catch (err) {
+          console.error(JSON.stringify({
+            tag: 'AUDIT_WRITE_FAILED',
+            message: 'force-deactivate-operator audit insert failed; mutation aborted',
+            error: err && err.message ? err.message : String(err),
+            action: 'force_deactivate_operator',
+            actor: registrar.id,
+            target: targetOperatorId,
+            target_registrar_id: targetOperatorRow.registrar_id,
+          }));
+          return addCors(jsonResponse(500, { error: { code: 'audit_write_failed', message: 'Audit record could not be written; mutation aborted' } }));
+        }
+        const result = await forceDeactivateOperator(targetOperatorId, body, env);
         return addCors(jsonResponse(result.status, result.body));
       }
 
@@ -652,6 +716,45 @@ export default {
         return addCors(jsonResponse(result.status, result.body));
       }
 
+      // POST /operators/:id/status — the operator kill switch (B1).
+      // Registrar-authed, BOLA-scoped to the caller's own operators; the
+      // cross-tenant break-glass is POST /admin/force-deactivate-operator/:id
+      // above. A non-active status denies /verify for every agent under the
+      // operator on the NEXT request (verify joins operators.status);
+      // 'active' restores them just as fast. Audited via waitUntil,
+      // matching the other normal-path mutations.
+      // Kill-switch rule ("kill switches never 429"): like DELETE /agents/*,
+      // this endpoint is deliberately NOT behind the per-operator RL_OPERATOR
+      // spam brake. The registrar-key RL_REGISTRAR tier still applies, same
+      // as the agent kill switch.
+      {
+        const m = path.match(/^\/operators\/([^/]+)\/status$/);
+        if (method === 'POST' && m) {
+          const opId = decodeURIComponent(m[1]);
+          const body = await request.json().catch(() => ({}));
+          const result = await handleSetOperatorStatus(opId, body, registrar, env);
+          if (result.status === 200) {
+            ctx.waitUntil(logAudit(env, {
+              action: 'set_operator_status',
+              actor: registrar.id,
+              target: opId,
+              operator_id: opId,
+              registrar_id: registrar.id,
+              // BOLA: handleSetOperatorStatus enforces self-scope, so actor
+              // IS the owning registrar.
+              target_registrar_id: registrar.id,
+              details: {
+                from: result.body.previous_status,
+                to: result.body.status,
+                reason: result.body.reason
+              },
+              ip_address: request.headers.get('cf-connecting-ip')
+            }));
+          }
+          return addCors(jsonResponse(result.status, result.body));
+        }
+      }
+
       // POST /operators/:id/verification — registrar-attested Verified Identity
       // (payment + KYC completed on the registrar side). Raises the enforced
       // agent cap. BOLA-scoped to the calling registrar's own operators.
@@ -712,11 +815,28 @@ function jsonResponse(status, body, extraHeaders = {}) {
 /**
  * Edge caching for public reads (Pre-Launch Engineering Brief §3.4).
  *
- * Aggressive `Cache-Control: public, max-age=3600` on `GET /agents/:id`,
+ * `Cache-Control: public, max-age=60` on `GET /agents/:id`,
  * `GET /operators/:id`, and `GET /resolve/:did` when the request is
- * unauthenticated. These keys never change (an agent's `did` / `axis_id`
- * is permanent), so a 1-hour edge cache dramatically cuts Worker
- * invocations for hot identities at zero correctness cost.
+ * unauthenticated. The lookup KEYS never change (an agent's `did` /
+ * `axis_id` is permanent), but the PAYLOADS carry `status` — under the
+ * original 1-hour TTL a freshly-revoked agent or operator could look
+ * `active` to record readers for up to an hour. 60s bounds
+ * revocation-visibility staleness to a minute while keeping the edge
+ * cache for hot identities.
+ *
+ * Why shorten the TTL rather than strip `status` from these payloads:
+ * `status` is load-bearing on these routes — /resolve emits the W3C
+ * `didDocumentMetadata.deactivated` field (spec-required resolution
+ * metadata) and downstream consumers read record status — so removing it
+ * would be a breaking wire-format change for a caching problem.
+ *
+ * Decision paths are unaffected: /verify* and /revocation/* never set
+ * Cache-Control at all; a status flip is authoritative there on the next
+ * request.
+ *
+ * `maxAge` is overridable for the static `.well-known` artifacts (scope
+ * vocabulary, registry manifest, root directory): those payloads carry no
+ * record status, so they keep the original 1-hour TTL.
  *
  * Conditional on the request: we only cache the PUBLIC LAYER. If the
  * caller is sending `Authorization` or `?ait=`, they're attempting to
@@ -732,13 +852,18 @@ function jsonResponse(status, body, extraHeaders = {}) {
  * these routes shouldn't be cached — a cached 404 would mask a freshly-
  * registered agent for an hour.
  */
-function publicReadCacheHeaders(request) {
+function publicReadCacheHeaders(request, maxAge = 60) {
   const authHeader = request.headers.get('Authorization');
   if (authHeader) return {};
   const aitQuery = new URL(request.url).searchParams.get('ait');
   if (aitQuery) return {};
-  return { 'Cache-Control': 'public, max-age=3600' };
+  return { 'Cache-Control': `public, max-age=${maxAge}` };
 }
+
+// Static, status-free `.well-known` artifacts keep the original 1-hour edge
+// cache; the 60s default above exists to bound STATUS staleness on record
+// reads, which doesn't apply here.
+const WELL_KNOWN_CACHE_MAX_AGE = 3600;
 
 /**
  * Decide which rate-limit tier (if any) a given request falls under and

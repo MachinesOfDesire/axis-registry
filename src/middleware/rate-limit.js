@@ -9,7 +9,8 @@
  *
  *   RL_PUBLIC_READ         6000 req/min per IP
  *     /agents/:id, /resolve/:did, /verify/:did, /revocation/:agent_id,
- *     /delegations/:id, /delegations/:id/chain, /.well-known/axis-access
+ *     /revocation/operator/:id, /delegations/:id, /delegations/:id/chain,
+ *     /.well-known/axis-access
  *     — high ceiling because every AI-comment verification on a host
  *     platform translates to one read here.
  *
@@ -42,9 +43,9 @@
  *     (`op:<id>`), which is why the check cannot live in the top-level
  *     tier picker: the operator is only known after the route has parsed
  *     the body and resolved ownership.
- *     DELIBERATELY EXCLUDED: DELETE /agents/* and DELETE /delegations/*.
- *     Deactivation and revocation are kill switches; an anti-spam limit
- *     must never 429 the revocation path.
+ *     DELIBERATELY EXCLUDED: DELETE /agents/*, DELETE /delegations/*, and
+ *     POST /operators/:id/status. Deactivation and revocation are kill
+ *     switches; an anti-spam limit must never 429 the revocation path.
  *
  * If a binding is unset (e.g. local dev), the helper is a no-op and
  * `success` is treated as `true`. Production deploys MUST set all four

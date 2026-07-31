@@ -22,24 +22,38 @@ export async function handleVerifyIdentity(identifier, env) {
 
   // Get operator info
   const operator = await env.DB.prepare(
-    'SELECT domain, domain_verified, operator_did FROM operators WHERE id = ?'
+    'SELECT domain, domain_verified, operator_did, status FROM operators WHERE id = ?'
   ).bind(agent.operator_id).first();
 
-  return {
-    status: 200,
-    body: {
-      verified: agent.status === 'active',
-      did: agent.did,
-      axis_id: agent.axis_id,
-      status: agent.status,
-      operator: {
-        domain: operator?.domain || null,
-        verified: Boolean(operator?.domain_verified)
-      },
-      registered: agent.created_at,
-      verifiedAt: new Date().toISOString()
-    }
+  // Operator kill switch (B1): a non-active operator denies verification for
+  // every agent under it — the operator-level analogue of the agent status
+  // check. Evaluated per request (verify responses are never cached), so an
+  // operators.status flip propagates on the next request. Only an EXISTING
+  // non-active row denies; a missing operator row keeps the pre-existing
+  // agent-only behavior (strictly additive on the hot path).
+  const operatorActive = !operator || operator.status === 'active';
+
+  const body = {
+    verified: agent.status === 'active' && operatorActive,
+    did: agent.did,
+    axis_id: agent.axis_id,
+    status: agent.status,
+    operator: {
+      domain: operator?.domain || null,
+      verified: Boolean(operator?.domain_verified),
+      status: operator?.status || null
+    },
+    registered: agent.created_at,
+    verifiedAt: new Date().toISOString()
   };
+  if (!operatorActive) {
+    // Reserved deny code for operator-level revocation. All non-active
+    // operator statuses (suspended, deactivated) surface as operator_revoked;
+    // the specific status is in body.operator.status.
+    body.code = 'operator_revoked';
+  }
+
+  return { status: 200, body };
 }
 
 export async function handleVerifyAIT(token, env) {
@@ -141,6 +155,31 @@ export async function handleVerifyAIT(token, env) {
           agent_id: agent.axis_id,
           reason: `Agent status: ${agent.status}`,
           status: agent.status
+        }
+      };
+    }
+
+    // Operator kill switch (B1): join the owning operator's status into the
+    // AIT verdict. Any non-active operator denies with the reserved
+    // `operator_revoked` code. Runs AFTER the agent status check so
+    // agent-specific codes (agent_revoked / agent_suspended) keep precedence
+    // when both are non-active. Evaluated per request — verify responses
+    // carry no Cache-Control, so a status flip propagates next request.
+    // Only an EXISTING non-active row denies; a missing operator row keeps
+    // the pre-existing agent-only behavior (strictly additive).
+    const operatorRow = await env.DB.prepare(
+      'SELECT status FROM operators WHERE id = ?'
+    ).bind(agent.operator_id).first();
+    if (operatorRow && operatorRow.status !== 'active') {
+      return {
+        status: 200,
+        body: {
+          valid: false,
+          code: 'operator_revoked',
+          agent_id: agent.axis_id,
+          operator_id: `axis:${agent.operator_id}:operator`,
+          reason: `Operator status: ${operatorRow.status}`,
+          operator_status: operatorRow.status
         }
       };
     }
