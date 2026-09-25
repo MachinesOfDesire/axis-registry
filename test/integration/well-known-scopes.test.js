@@ -38,6 +38,11 @@ test('well-known/axis-scopes: 200, v0.3, non-empty scopes, known scopes present'
   assert.equal(typeof comment.description, 'string');
   assert.ok(comment.description.length > 0);
 
+  const attest = byScope.get('content:attest');
+  assert.ok(attest, 'content:attest must be present');
+  assert.equal(attest.standard, true);
+  assert.match(attest.description, /provenance/);
+
   const purchase = byScope.get('commerce:purchase');
   assert.ok(purchase, 'commerce:purchase must be present');
   assert.equal(purchase.standard, true);

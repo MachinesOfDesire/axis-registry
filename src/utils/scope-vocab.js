@@ -51,6 +51,7 @@ export const STANDARD_VOCABULARY = {
     'content:delete': 'Delete content items.',
     'content:comment': 'Comment on content items.',
     'content:publish': 'Publish content items.',
+    'content:attest': 'Attest that a content item was produced under the holder\'s authority: a signed, revocable statement of provenance, not an edit to the item.',
   },
   social: {
     'social:follow': 'Follow an account or actor.',
