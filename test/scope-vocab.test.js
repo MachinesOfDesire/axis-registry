@@ -33,6 +33,7 @@ test('STANDARD_SCOPES / STANDARD_DOMAINS: seed shape', () => {
 test('isStandardScope: strict membership, no wildcard/prefix expansion', () => {
   assert.ok(isStandardScope('content:read'));
   assert.ok(isStandardScope('social:flag'));
+  assert.ok(isStandardScope('content:attest'));   // provenance: vouching for an item, not editing it
   assert.ok(!isStandardScope('content:*'));        // wildcard is not a standard scope
   assert.ok(!isStandardScope('content'));          // bare domain is not a standard scope
   assert.ok(!isStandardScope('x-ghost:newsletter:send'));
